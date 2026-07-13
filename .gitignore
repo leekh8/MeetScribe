@@ -1,0 +1,29 @@
+# 가상환경
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# 모델 (대용량 — 절대 커밋 금지)
+models/
+*.bin
+*.ct2
+
+# 오디오 원본·전사 결과 (프라이버시 — 커밋 금지)
+data/
+samples/*.m4a
+samples/*.wav
+samples/*.mp3
+*.m4a
+*.wav
+*.mp3
+
+# 개인·조직 특화 용어 사전 (조직 정보 유출 방지)
+corrections.local.json
+
+# LLM 자격증명
+.env
+
+# OS
+.DS_Store
+Thumbs.db
