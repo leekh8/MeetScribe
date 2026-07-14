@@ -49,9 +49,32 @@ python cli.py "회의녹음.m4a" -o out/
 # 화자 분리 포함 (Phase 2, pyannote + HF 토큰 필요)
 python cli.py "회의녹음.m4a" --diarize
 
-# LLM 요약 포함 (Phase 3)
+# LLM 요약 포함 (Phase 3 — 현재 미구현, 실행 시 경고 후 생략)
 python cli.py "회의녹음.m4a" --summarize
+
+# 언어 지정 / 기존 출력 덮어쓰기 / 조용히
+python cli.py "meeting.m4a" --language en --force --quiet
+
+# 전사 없이 입력·출력 경로만 미리보기
+python cli.py "회의녹음.m4a" --dry-run
 ```
+
+### 주요 옵션
+
+| 옵션 | 설명 |
+|------|------|
+| `--model {tiny,base,small,medium,large-v3}` | Whisper 모델 (기본 `medium`) |
+| `--language <code>` | 전사 언어 (기본 `ko`, 예: `en`/`ja`) |
+| `-o, --out-dir <dir>` | 출력 디렉토리 |
+| `--diarize` | 화자 분리 (pyannote 미설치 시 경고 후 생략) |
+| `--summarize` | LLM 요약 (Phase 3 미구현 — 경고 후 생략) |
+| `--hf-token <token>` | 화자 분리용 HF 토큰 (또는 `HF_TOKEN` 환경변수) |
+| `--force` | 기존 `{파일명}.md` 덮어쓰기 (기본은 거부) |
+| `--dry-run` | 전사 없이 경로·설정만 출력 |
+| `--quiet` | 진행 로그 숨김 |
+| `--version` | 버전 출력 |
+
+> 지원 입력: `.m4a .wav .mp3 .flac .ogg .aac .mp4 .webm .opus`. 그 외 확장자·없는 파일은 전사 시작 전에 즉시 오류로 걸러진다.
 
 ## 도메인 용어 사전
 

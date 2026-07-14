@@ -6,57 +6,139 @@
 """
 
 import argparse
-import io
+import importlib.util
 import os
 import sys
 from pathlib import Path
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+# Windows 콘솔(cp949)에서도 한글이 깨지지 않도록 stdout/stderr를 UTF-8로 재설정.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
-from meetscribe.config import DEFAULT_MODEL, DEFAULT_OUTPUT_DIR
+from meetscribe import __version__
+from meetscribe.config import DEFAULT_LANGUAGE, DEFAULT_MODEL, DEFAULT_OUTPUT_DIR
 from meetscribe.render import parse_meta, render_markdown
 from meetscribe.transcribe import transcribe
+
+# faster-whisper/ffmpeg가 디코드할 수 있는 대표 확장자.
+SUPPORTED_EXTS = {".m4a", ".wav", ".mp3", ".flac", ".ogg", ".aac", ".mp4", ".webm", ".opus"}
+
+
+def _module_available(name: str) -> bool:
+    """설치 여부 확인. find_spec은 부모 패키지가 없으면 ModuleNotFoundError를 던지므로 흡수한다."""
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _eprint(msg: str) -> None:
+    print(msg, file=sys.stderr)
+
+
+def _fail(msg: str, code: int = 1) -> "None":
+    _eprint(f"ERROR: {msg}")
+    sys.exit(code)
 
 
 def main():
     parser = argparse.ArgumentParser(description="MeetScribe — 로컬 회의록 자동화")
-    parser.add_argument("audio", help="오디오 파일 (m4a/wav/mp3)")
+    parser.add_argument("audio", help="오디오 파일 (m4a/wav/mp3 등)")
     parser.add_argument("--model", default=DEFAULT_MODEL,
                         choices=["tiny", "base", "small", "medium", "large-v3"],
                         help=f"Whisper 모델 (기본 {DEFAULT_MODEL})")
+    parser.add_argument("--language", default=DEFAULT_LANGUAGE,
+                        help=f"전사 언어 코드 (기본 {DEFAULT_LANGUAGE}, 예: en/ja)")
     parser.add_argument("-o", "--out-dir", type=Path, default=DEFAULT_OUTPUT_DIR,
                         help="출력 디렉토리")
     parser.add_argument("--diarize", action="store_true", help="화자 분리 (Phase 2)")
     parser.add_argument("--summarize", action="store_true", help="LLM 요약 (Phase 3)")
-    parser.add_argument("--hf-token", default=os.environ.get("HF_TOKEN"),
-                        help="화자 분리용 HuggingFace 토큰")
+    parser.add_argument("--hf-token", default=None,
+                        help="화자 분리용 HuggingFace 토큰 (미지정 시 HF_TOKEN 환경변수)")
+    parser.add_argument("--force", action="store_true", help="기존 출력 파일 덮어쓰기")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="전사 없이 입력·출력 경로만 확인")
+    parser.add_argument("--quiet", action="store_true", help="진행 로그 숨김")
+    parser.add_argument("--version", action="version", version=f"MeetScribe {__version__}")
     args = parser.parse_args()
 
+    hf_token = args.hf_token or os.environ.get("HF_TOKEN")
+
+    # ── 입력 검증 ──────────────────────────────────────────────────────────
     audio_path = Path(args.audio)
     if not audio_path.exists():
-        print(f"ERROR: 파일 없음: {audio_path}")
-        sys.exit(1)
+        _fail(f"파일 없음: {audio_path}")
+    if not audio_path.is_file():
+        _fail(f"파일이 아님: {audio_path}")
+    if audio_path.suffix.lower() not in SUPPORTED_EXTS:
+        _fail(f"지원하지 않는 형식 '{audio_path.suffix}' — 지원: "
+              f"{', '.join(sorted(SUPPORTED_EXTS))}")
 
-    segments = transcribe(audio_path, model_size=args.model)
+    out_path = args.out_dir / f"{audio_path.stem}.md"
+    if out_path.exists() and not args.force and not args.dry_run:
+        _fail(f"출력 파일이 이미 있음: {out_path} (덮어쓰려면 --force)")
 
-    if args.diarize:
+    # ── 선택 기능 사전 점검 (비싼 전사 전에 실패/경고) ──────────────────────
+    # 전사는 수 분~수십 분 걸리므로, 쓸 수 없는 옵션은 여기서 걸러 낭비를 막는다.
+    do_diarize = args.diarize
+    do_summarize = args.summarize
+    if do_diarize and not _module_available("pyannote.audio"):
+        _eprint("경고: pyannote.audio 미설치 — 화자 분리를 건너뜁니다 "
+                "(requirements.txt 주석 해제 후 설치).")
+        do_diarize = False
+    if do_summarize:
+        # 요약은 Phase 3 미구현 — 전사 후 크래시하지 않도록 미리 알리고 생략한다.
+        _eprint("경고: 요약(--summarize)은 Phase 3에서 구현 예정 — 이번 실행에서는 생략합니다.")
+        do_summarize = False
+
+    if args.dry_run:
+        print(f"[dry-run] 입력 : {audio_path}")
+        print(f"[dry-run] 출력 : {out_path}")
+        print(f"[dry-run] 모델 : {args.model} / 언어: {args.language}"
+              f" / 화자분리: {do_diarize} / 요약: {do_summarize}")
+        return
+
+    progress = not args.quiet
+
+    # ── 전사 ───────────────────────────────────────────────────────────────
+    try:
+        segments = transcribe(audio_path, model_size=args.model,
+                              language=args.language, progress=progress)
+    except (RuntimeError, OSError) as e:
+        _fail(f"전사 실패: {e}")
+    if not segments:
+        _fail("전사 결과가 비어 있습니다 — 오디오에 음성이 없거나 형식이 잘못됐을 수 있습니다.")
+
+    # ── 화자 분리 (선택) ───────────────────────────────────────────────────
+    if do_diarize:
         from meetscribe.diarize import assign_speakers, diarize
-        print("화자 분리 중...")
-        turns = diarize(audio_path, hf_token=args.hf_token)
-        segments = assign_speakers(segments, turns)
+        if progress:
+            print("화자 분리 중...")
+        try:
+            turns = diarize(audio_path, hf_token=hf_token)
+            segments = assign_speakers(segments, turns)
+        except (RuntimeError, OSError) as e:
+            _eprint(f"경고: 화자 분리 실패 — 화자 없이 진행합니다 ({e})")
 
+    # ── 요약 (선택, 현재 비활성) ───────────────────────────────────────────
     summary = None
-    if args.summarize:
+    if do_summarize:
         from meetscribe.summarize import summarize
-        print("요약 생성 중...")
-        summary = summarize(segments)
+        try:
+            summary = summarize(segments)
+        except (RuntimeError, NotImplementedError) as e:
+            _eprint(f"경고: 요약 생략 ({e})")
 
+    # ── 렌더 + 저장 ────────────────────────────────────────────────────────
     meta = parse_meta(audio_path)
     md = render_markdown(segments, meta, summary=summary)
 
-    args.out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = args.out_dir / f"{audio_path.stem}.md"
-    out_path.write_text(md, encoding="utf-8")
+    try:
+        args.out_dir.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(md, encoding="utf-8")
+    except OSError as e:
+        _fail(f"저장 실패: {out_path} ({e})")
     print(f"저장: {out_path}")
 
 
