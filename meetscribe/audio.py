@@ -6,16 +6,22 @@ from pathlib import Path
 
 
 def get_duration(path: Path) -> float:
-    """ffprobe로 오디오 길이(초). 실패 시 파일 크기로 대략 추정."""
+    """ffprobe로 오디오 길이(초). 알 수 없으면 0.0 반환(진행률 표시 생략용).
+
+    과거엔 파일 크기로 '≈1MB/분' 추정했으나, 압축 코덱(m4a/mp3)에선 실제와 한 자릿수 이상
+    어긋나 진행률이 크게 왜곡됐다. 부정확한 %보다 '알 수 없음(0.0)'이 정직하다.
+    """
     try:
         result = subprocess.run(
             ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
              "-of", "csv=p=0", str(path)],
             capture_output=True, text=True, timeout=10,
         )
+        if result.returncode != 0:
+            return 0.0
         return float(result.stdout.strip())
     except (subprocess.SubprocessError, ValueError, OSError):
-        return path.stat().st_size / 1024 / 1024 * 60  # ≈ 1MB/분
+        return 0.0
 
 def format_ts(seconds: float) -> str:
     """초 → MM:SS 또는 H:MM:SS."""

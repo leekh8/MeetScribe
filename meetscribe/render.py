@@ -12,6 +12,11 @@ from .audio import format_ts
 from .summarize import Summary
 
 
+def _cell(value) -> str:
+    """마크다운 표 셀 이스케이프 — 파이프·개행이 표 구조를 깨지 않게."""
+    return str(value).replace("|", "\\|").replace("\n", " ").strip()
+
+
 def parse_meta(audio_path: Path) -> dict:
     """파일명에서 제목·날짜 추출. 'XXX_YYMMDD_HHMMSS' 패턴을 인식한다."""
     name = audio_path.stem
@@ -49,7 +54,10 @@ def render_markdown(segments: list[dict], meta: dict,
         if summary.action_items:
             lines += ["## 액션아이템", "", "| 담당 | 내용 | 기한 |", "|---|---|---|"]
             for a in summary.action_items:
-                lines.append(f"| {a.get('owner','')} | {a.get('task','')} | {a.get('due','')} |")
+                lines.append(
+                    f"| {_cell(a.get('owner',''))} | {_cell(a.get('task',''))} "
+                    f"| {_cell(a.get('due',''))} |"
+                )
             lines.append("")
         lines += ["## 전문", ""]
 

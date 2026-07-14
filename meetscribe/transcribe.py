@@ -24,18 +24,24 @@ def transcribe(
     from faster_whisper import WhisperModel
 
     corrector = corrector if corrector is not None else Corrector()
-    duration = get_duration(audio_path)
+    duration = get_duration(audio_path)  # 0이면 길이 불명(ffprobe 실패) → % 대신 타임스탬프 표시
 
     if progress:
         print(f"모델 로딩: {model_size} (CPU, int8)")
-    model = WhisperModel(model_size, device="cpu", compute_type="int8")
+    try:
+        model = WhisperModel(model_size, device="cpu", compute_type="int8")
+    except Exception as e:  # 모델 다운로드 실패·네트워크·디스크 등
+        raise RuntimeError(
+            f"Whisper 모델 '{model_size}' 로드 실패 ({e}). "
+            "최초 실행은 모델 다운로드가 필요하니 네트워크를 확인하세요."
+        ) from e
 
     def _run(vad: bool):
         segments_iter, _info = model.transcribe(
             str(audio_path),
             language=language,
             beam_size=5,
-            word_timestamps=True,
+            word_timestamps=False,  # start/end/text만 사용 — 단어 단위 타임스탬프는 불필요한 오버헤드
             vad_filter=vad,
             vad_parameters=_VAD_PARAMS if vad else None,
         )
@@ -44,16 +50,24 @@ def transcribe(
             text = corrector.apply(seg.text.strip())
             out.append({"start": seg.start, "end": seg.end, "text": text})
             if progress:
-                pct = min(seg.end / duration * 100, 100) if duration > 0 else 0
-                print(f"\r  [{pct:5.1f}%] {format_ts(seg.start)} {text[:60]}", end="")
+                if duration > 0:
+                    pct = min(seg.end / duration * 100, 100)
+                    print(f"\r  [{pct:5.1f}%] {format_ts(seg.start)} {text[:60]}", end="")
+                else:
+                    print(f"\r  [{format_ts(seg.start)}] {text[:60]}", end="")
         return out
 
-    segments = _run(vad=True)
-    # VAD가 전 구간을 침묵으로 오판하면 세그먼트 0개 → VAD 끄고 재시도.
-    if not segments:
-        if progress:
-            print("\n  VAD로 감지 실패 — VAD 없이 재시도")
-        segments = _run(vad=False)
+    try:
+        segments = _run(vad=True)
+        # VAD가 전 구간을 침묵으로 오판하면 세그먼트 0개 → VAD 끄고 재시도.
+        if not segments:
+            if progress:
+                print("\n  VAD로 감지 실패 — VAD 없이 재시도")
+            segments = _run(vad=False)
+    except Exception as e:  # 디코드 단계 오류(ffmpeg 부재·손상 파일 등)
+        raise RuntimeError(
+            f"오디오 전사 실패 ({e}). ffmpeg 설치 여부와 오디오 파일 상태를 확인하세요."
+        ) from e
 
     if progress:
         print(f"\n전사 완료: {len(segments)}개 세그먼트")

@@ -26,6 +26,12 @@ def diarize(audio_path: Path, hf_token: str | None = None) -> list[dict]:
     pipeline = Pipeline.from_pretrained(
         "pyannote/speaker-diarization-3.1", use_auth_token=hf_token
     )
+    # 토큰 누락·무효거나 모델 사용 동의 전이면 pyannote는 예외 대신 None을 돌려준다.
+    if pipeline is None:
+        raise RuntimeError(
+            "화자 분리 파이프라인 로드 실패 — HuggingFace 토큰이 유효한지, "
+            "pyannote/speaker-diarization-3.1 모델 사용 동의를 마쳤는지 확인하세요."
+        )
     annotation = pipeline(str(audio_path))
     turns = []
     for turn, _, speaker in annotation.itertracks(yield_label=True):
