@@ -23,8 +23,10 @@ class Corrector:
         ]
 
     def apply(self, text: str) -> str:
+        # 치환값을 콜러블로 넘긴다 — 문자열로 넘기면 re가 '\1'·'\g<..>' 같은 백참조로
+        # 해석해, 로컬 사전(corrections.local.json)에 역슬래시가 든 표기가 있으면 깨진다.
         for pattern, correct in self._patterns:
-            text = pattern.sub(correct, text)
+            text = pattern.sub(lambda _m, c=correct: c, text)
         return text
 
     def __len__(self) -> int:
