@@ -85,10 +85,22 @@ python cli.py "회의녹음.m4a" --dry-run
 { "시엠": "SIEM", "씨브이이": "CVE", "우리회사제품명": "정확한표기" }
 ```
 
+## 테스트
+
+순수 함수(용어 교정·회의록 렌더·타임스탬프·화자 배정·사전 로딩)를 pytest로 검증한다.
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest              # 23 tests
+```
+
+전사(faster-whisper)·화자 분리(pyannote)처럼 대용량 모델·외부 실행이 필요한 부분은
+지연 import로 분리돼 있어, 테스트는 모델 없이 로직만 빠르게 돈다.
+
 ## 개발 상태
 
 - [x] Phase 0 — 모듈 리팩터·스캐폴딩
-- [ ] Phase 1 — 오프라인 파이프라인 end-to-end 검증
+- [ ] Phase 1 — 오프라인 파이프라인 end-to-end 검증 (순수 로직 pytest 커버 완료)
 - [ ] Phase 2 — 화자 분리(pyannote)
 - [ ] Phase 3 — LLM 요약·액션아이템
 - [ ] Phase 4 — Streamlit UI
