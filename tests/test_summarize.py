@@ -96,7 +96,8 @@ def test_single_chunk_skips_the_merge_call(stub_backend):
         "decisions": ["금요일에 배포한다"],
         "action_items": [{"owner": "홍길동", "task": "릴리스 노트", "due": "목요일"}],
     }])
-    result = S.summarize([_seg("짧은 회의")], progress=False)
+    # 담당자와 기한은 원문에 있어야 살아남는다.
+    result = S.summarize([_seg("홍길동이 목요일까지 릴리스 노트를 쓴다")], progress=False)
     assert len(calls) == 1                      # map만, reduce 없음
     assert result.decisions == ["금요일에 배포한다"]
     assert result.action_items[0]["owner"] == "홍길동"
@@ -297,3 +298,33 @@ def test_empty_input_does_not_touch_the_backend(monkeypatch):
     monkeypatch.setattr(S, "release_model", boom)
     monkeypatch.setattr(S, "check_backend", boom)
     assert S.summarize([]) == S.Summary()
+
+
+# ── 원문 대조 ───────────────────────────────────────────────────────────────
+
+def test_owner_not_in_transcript_is_dropped(stub_backend):
+    # 실측: 전사본에 0회인 "개발자"를 담당자로 채워 넣었다. 원문에 없으면 버린다.
+    stub_backend([{"topics": [], "decisions": [],
+                   "action_items": [{"owner": "개발자", "task": "패턴 추출", "due": "금요일"}]}])
+    result = S.summarize([_seg("금요일까지 패턴 추출하기로 했다")], progress=False)
+    assert result.action_items == [{"owner": "", "task": "패턴 추출", "due": "금요일"}]
+
+
+def test_owner_in_transcript_is_kept(stub_backend):
+    stub_backend([{"topics": [], "decisions": [],
+                   "action_items": [{"owner": "홍길동", "task": "확인", "due": ""}]}])
+    result = S.summarize([_seg("홍길동이 확인하기로 했다")], progress=False)
+    assert result.action_items[0]["owner"] == "홍길동"
+
+
+def test_grounding_matches_name_with_honorific(stub_backend):
+    # 원문이 "홍길동님"이어도 "홍길동"은 부분 문자열이라 살아남는다.
+    stub_backend([{"topics": [], "decisions": [],
+                   "action_items": [{"owner": "홍길동", "task": "확인", "due": ""}]}])
+    result = S.summarize([_seg("홍길동님이 확인하기로 했다")], progress=False)
+    assert result.action_items[0]["owner"] == "홍길동"
+
+
+def test_grounding_is_skipped_without_source():
+    assert S._grounded("개발자", "") == "개발자"
+    assert S._grounded("", "무슨 말") == ""

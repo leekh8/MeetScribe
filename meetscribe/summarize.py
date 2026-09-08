@@ -233,8 +233,24 @@ def _clean(value) -> str:
     return "" if text.lower() in _PLACEHOLDER else text
 
 
-def _clean_actions(items) -> list[dict]:
-    """액션아이템을 owner/task/due 세 칸으로 정규화한다. 할 일이 없으면 버린다."""
+def _grounded(value: str, source: str) -> str:
+    """전사본에 실제로 있는 말인가. 없으면 버린다.
+
+    프롬프트로는 못 막는다. "직책을 지어내지 마라"고 명시해도 4B 모델은 빈 칸을 만나면
+    그럴듯한 것을 채운다(실측: 전사본에 0회인 "개발자"를 담당자로 5건 전부에 넣었다).
+    담당자와 기한은 요약이 아니라 인용이므로, 원문에 있는 문자열인지 대조할 수 있다.
+    비는 것보다 틀린 것이 나쁘다.
+    """
+    if not value or not source:
+        return value
+    return value if value in source else ""
+
+
+def _clean_actions(items, source: str = "") -> list[dict]:
+    """액션아이템을 owner/task/due 세 칸으로 정규화한다.
+
+    할 일이 없으면 버린다. source를 주면 담당자와 기한이 원문에 있는지 대조한다.
+    """
     cleaned = []
     for item in _as_list(items):
         if not isinstance(item, dict):
@@ -243,9 +259,9 @@ def _clean_actions(items) -> list[dict]:
         if not task:
             continue
         cleaned.append({
-            "owner": _clean(item.get("owner")),
+            "owner": _grounded(_clean(item.get("owner")), source),
             "task": task,
-            "due": _clean(item.get("due")),
+            "due": _grounded(_clean(item.get("due")), source),
         })
     return cleaned
 
@@ -272,7 +288,8 @@ def summarize(segments: list[dict], *, model: str = DEFAULT_MODEL,
 def _run_summary(segments: list[dict], model: str, host: str,
                  progress: bool, chunk_chars: int) -> Summary:
     check_backend(host, model)
-    chunks = chunk_transcript(_segments_to_transcript(segments, MERGE_CHARS), chunk_chars)
+    transcript = _segments_to_transcript(segments, MERGE_CHARS)
+    chunks = chunk_transcript(transcript, chunk_chars)
 
     parts = []
     for i, chunk in enumerate(chunks, 1):
@@ -292,7 +309,7 @@ def _run_summary(segments: list[dict], model: str, host: str,
             overview=", ".join(dict.fromkeys(
                 t for t in (_clean(x) for x in _as_list(only.get("topics"))) if t)),
             decisions=_clean_decisions(only.get("decisions")),
-            action_items=_clean_actions(only.get("action_items")),
+            action_items=_clean_actions(only.get("action_items"), transcript),
         )
 
     if progress:
@@ -307,7 +324,8 @@ def _run_summary(segments: list[dict], model: str, host: str,
         return Summary(
             overview="",
             decisions=[d for p in parts for d in _clean_decisions(p.get("decisions"))],
-            action_items=[a for p in parts for a in _clean_actions(p.get("action_items"))],
+            action_items=[a for p in parts
+                          for a in _clean_actions(p.get("action_items"), transcript)],
         )
 
     overview = str(merged.get("overview", "")).strip()
@@ -319,5 +337,5 @@ def _run_summary(segments: list[dict], model: str, host: str,
     return Summary(
         overview=overview,
         decisions=_clean_decisions(merged.get("decisions")),
-        action_items=_clean_actions(merged.get("action_items")),
+        action_items=_clean_actions(merged.get("action_items"), transcript),
     )
