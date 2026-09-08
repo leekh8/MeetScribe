@@ -198,7 +198,7 @@ def translit_ratio(token: str) -> float:
 def people_surface_forms(people: dict) -> set[str]:
     """호칭 전체와 그것을 쪼갠 조각까지 모은다.
 
-    "규해 주임"은 띄어쓰기 때문에 "규해"와 "주임" 두 토큰으로 잡힌다.
+    "길동 주임"은 띄어쓰기 때문에 "길동"와 "주임" 두 토큰으로 잡힌다.
     통째로만 빼면 조각이 그대로 후보에 남으므로 조각도 함께 넣는다.
     """
     forms: set[str] = set()

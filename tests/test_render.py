@@ -47,10 +47,10 @@ def test_render_with_summary_sections():
     summary = Summary(
         overview="개요 텍스트",
         decisions=["결정1"],
-        action_items=[{"owner": "규주", "task": "할일", "due": "내일"}],
+        action_items=[{"owner": "홍길동", "task": "할일", "due": "내일"}],
     )
     md = render_markdown(segs, {"title": "T"}, summary=summary)
     assert "## 요약" in md and "개요 텍스트" in md
     assert "## 결정사항" in md and "- 결정1" in md
-    assert "## 액션아이템" in md and "| 규주 | 할일 | 내일 |" in md
+    assert "## 액션아이템" in md and "| 홍길동 | 할일 | 내일 |" in md
     assert "## 전문" in md

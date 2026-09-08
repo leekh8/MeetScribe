@@ -97,8 +97,8 @@ def test_correct_spelling_is_not_asked_either():
 
 
 def test_speaker_names_are_excluded():
-    docs = [_doc("a", ["김진성 님이 말했다 " * 4], speakers=["김진성"]), _doc("b", ["다른 회의"])]
-    assert not any(c.token == "김진성" for c in find_candidates(docs, {}))
+    docs = [_doc("a", ["이철수 님이 말했다 " * 4], speakers=["이철수"]), _doc("b", ["다른 회의"])]
+    assert not any(c.token == "이철수" for c in find_candidates(docs, {}))
 
 
 def test_latin_case_variants_are_grouped():
@@ -122,14 +122,14 @@ def test_load_document_parses_md_transcript(tmp_path):
     md = tmp_path / "회의.md"
     md.write_text(
         "---\nstatus: draft\n---\n\n"
-        "**[00:01]** **이규해** 첫 문장입니다.\n"
-        "**[00:05]** **박주현**: 둘째 문장입니다.\n"
+        "**[00:01]** **홍길동** 첫 문장입니다.\n"
+        "**[00:05]** **김영희**: 둘째 문장입니다.\n"
         "본문 아닌 줄\n",
         encoding="utf-8",
     )
     doc = load_document(md)
     assert doc["sentences"] == ["첫 문장입니다.", "둘째 문장입니다."]
-    assert doc["speakers"] == {"이규해", "박주현"}
+    assert doc["speakers"] == {"홍길동", "김영희"}
 
 
 def test_load_document_parses_json_transcript(tmp_path):
@@ -180,44 +180,44 @@ def test_empty_answer_goes_to_the_ignore_list(tmp_path):
     # 오인식이 아니라는 답(인명 등)은 사전이 아니라 무시 목록으로 간다.
     dict_path = tmp_path / "corrections.local.json"
     ignore_path = tmp_path / "vocab_ignore.local.json"
-    assert merge_answers({"에이미": "", "소아": "SOAR"}, dict_path, ignore_path) == (1, 0, 1)
-    assert json.loads(ignore_path.read_text(encoding="utf-8")) == ["에이미"]
-    assert "에이미" not in json.loads(dict_path.read_text(encoding="utf-8"))
+    assert merge_answers({"앨리스": "", "소아": "SOAR"}, dict_path, ignore_path) == (1, 0, 1)
+    assert json.loads(ignore_path.read_text(encoding="utf-8")) == ["앨리스"]
+    assert "앨리스" not in json.loads(dict_path.read_text(encoding="utf-8"))
 
 
 def test_ignore_list_is_not_duplicated(tmp_path):
     dict_path = tmp_path / "corrections.local.json"
     ignore_path = tmp_path / "vocab_ignore.local.json"
-    merge_answers({"에이미": ""}, dict_path, ignore_path)
-    assert merge_answers({"에이미": ""}, dict_path, ignore_path) == (0, 0, 0)
+    merge_answers({"앨리스": ""}, dict_path, ignore_path)
+    assert merge_answers({"앨리스": ""}, dict_path, ignore_path) == (0, 0, 0)
 
 
 def test_ignored_terms_are_not_asked_again():
-    docs = [_doc("a", ["에이미 확인 " * 4]), _doc("b", ["다른 회의"])]
-    assert any(c.token == "에이미" for c in find_candidates(docs, {}))
-    assert not any(c.token == "에이미"
-                   for c in find_candidates(docs, {}, ignored={"에이미"}))
+    docs = [_doc("a", ["앨리스 확인 " * 4]), _doc("b", ["다른 회의"])]
+    assert any(c.token == "앨리스" for c in find_candidates(docs, {}))
+    assert not any(c.token == "앨리스"
+                   for c in find_candidates(docs, {}, ignored={"앨리스"}))
 
 
 def test_people_surface_forms_expands_aliases_and_parts():
     from meetscribe.vocab import people_surface_forms
-    forms = people_surface_forms({"이규해": ["규해 주임", "규주", "에이미"]})
+    forms = people_surface_forms({"홍길동": ["길동 주임", "홍길동", "앨리스"]})
     # 통째 호칭과 그 조각이 모두 들어간다.
-    assert {"이규해", "규해 주임", "규주", "에이미", "규해", "주임"} <= forms
+    assert {"홍길동", "길동 주임", "홍길동", "앨리스", "길동", "주임"} <= forms
 
 
 def test_people_forms_keep_every_alias_out_of_candidates():
     from meetscribe.vocab import people_surface_forms
     docs = [
-        _doc("a", ["규해 주임이 확인했다 " * 3, "규주가 답했다 " * 3, "주현 팀장도 봤다 " * 3]),
+        _doc("a", ["길동 주임이 확인했다 " * 3, "홍길동가 답했다 " * 3, "영희 팀장도 봤다 " * 3]),
         _doc("b", ["다른 회의"]),
     ]
     forms = people_surface_forms({
-        "이규해": ["규해 주임", "규주"],
-        "박주현": ["주현 팀장"],
+        "홍길동": ["길동 주임", "홍길동"],
+        "김영희": ["영희 팀장"],
     })
     tokens = {c.token for c in find_candidates(docs, {}, ignored=forms)}
-    assert not tokens & {"규해", "규주", "주현", "주임", "팀장"}
+    assert not tokens & {"길동", "홍길동", "영희", "주임", "팀장"}
 
 
 def test_people_forms_ignore_malformed_entries():

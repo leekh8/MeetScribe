@@ -93,12 +93,12 @@ def test_single_chunk_skips_the_merge_call(stub_backend):
     calls = stub_backend([{
         "topics": ["배포 일정"],
         "decisions": ["금요일에 배포한다"],
-        "action_items": [{"owner": "규주", "task": "릴리스 노트", "due": "목요일"}],
+        "action_items": [{"owner": "홍길동", "task": "릴리스 노트", "due": "목요일"}],
     }])
     result = S.summarize([_seg("짧은 회의")], progress=False)
     assert len(calls) == 1                      # map만, reduce 없음
     assert result.decisions == ["금요일에 배포한다"]
-    assert result.action_items[0]["owner"] == "규주"
+    assert result.action_items[0]["owner"] == "홍길동"
 
 
 def test_multiple_chunks_are_merged(stub_backend):
@@ -253,7 +253,7 @@ def test_action_item_without_task_is_dropped(stub_backend):
     stub_backend([{
         "topics": [],
         "decisions": [],
-        "action_items": [{"owner": "규주", "task": "", "due": "월요일"},
+        "action_items": [{"owner": "홍길동", "task": "", "due": "월요일"},
                          {"owner": "", "task": "실제 할 일", "due": ""}],
     }])
     result = S.summarize([_seg("무엇")], progress=False)
