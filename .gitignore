@@ -10,7 +10,10 @@ models/
 *.ct2
 
 # 오디오 원본·전사 결과 (프라이버시 — 커밋 금지)
+# out/ 은 cli.py 기본 출력 경로다. 회의록 전문이 그대로 쌓이므로 반드시 제외한다.
 data/
+out/
+terms_to_ask.*
 samples/*.m4a
 samples/*.wav
 samples/*.mp3
@@ -27,3 +30,7 @@ corrections.local.json
 # OS
 .DS_Store
 Thumbs.db
+
+# 도구 부산물
+.pytest_cache/
+*.stackdump
