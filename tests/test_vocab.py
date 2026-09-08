@@ -197,3 +197,29 @@ def test_ignored_terms_are_not_asked_again():
     assert any(c.token == "에이미" for c in find_candidates(docs, {}))
     assert not any(c.token == "에이미"
                    for c in find_candidates(docs, {}, ignored={"에이미"}))
+
+
+def test_people_surface_forms_expands_aliases_and_parts():
+    from meetscribe.vocab import people_surface_forms
+    forms = people_surface_forms({"이규해": ["규해 주임", "규주", "에이미"]})
+    # 통째 호칭과 그 조각이 모두 들어간다.
+    assert {"이규해", "규해 주임", "규주", "에이미", "규해", "주임"} <= forms
+
+
+def test_people_forms_keep_every_alias_out_of_candidates():
+    from meetscribe.vocab import people_surface_forms
+    docs = [
+        _doc("a", ["규해 주임이 확인했다 " * 3, "규주가 답했다 " * 3, "주현 팀장도 봤다 " * 3]),
+        _doc("b", ["다른 회의"]),
+    ]
+    forms = people_surface_forms({
+        "이규해": ["규해 주임", "규주"],
+        "박주현": ["주현 팀장"],
+    })
+    tokens = {c.token for c in find_candidates(docs, {}, ignored=forms)}
+    assert not tokens & {"규해", "규주", "주현", "주임", "팀장"}
+
+
+def test_people_forms_ignore_malformed_entries():
+    from meetscribe.vocab import people_surface_forms
+    assert people_surface_forms({"이름": [], "  ": ["  "]}) == {"이름"}

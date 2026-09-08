@@ -8,6 +8,8 @@ DEFAULT_OUTPUT_DIR = ROOT / "out"
 LOCAL_DICT_PATH = ROOT / "corrections.local.json"
 # 오인식이 아닌데 후보로 올라오는 말(인명 등). 사전에 넣을 수 없어 따로 둔다.
 LOCAL_IGNORE_PATH = ROOT / "vocab_ignore.local.json"
+# 사람 호칭 모음. 한 사람이 여러 이름으로 불리면 호칭마다 따로 후보로 올라온다.
+LOCAL_PEOPLE_PATH = ROOT / "people.local.json"
 
 DEFAULT_MODEL = "medium"
 DEFAULT_LANGUAGE = "ko"
@@ -59,3 +61,22 @@ def load_ignored() -> set:
         print(f"경고: {LOCAL_IGNORE_PATH.name} 로드 실패 ({e}) - 무시 목록 없이 진행")
         return set()
     return {str(x) for x in data} if isinstance(data, list) else set()
+
+
+def load_people() -> dict:
+    """정식 이름 -> 호칭 목록.
+
+    같은 사람이 "이규해 주임", "규해 주임", "규주"로 불리면 셋 다 다른 토큰이 된다.
+    호칭은 교정 대상이 아니므로 사전이 아니라 여기에 모아 후보에서 빼기만 한다.
+    """
+    if not LOCAL_PEOPLE_PATH.exists():
+        return {}
+    try:
+        data = json.loads(LOCAL_PEOPLE_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"경고: {LOCAL_PEOPLE_PATH.name} 로드 실패 ({e}) - 호칭 목록 없이 진행")
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): [str(a) for a in v] if isinstance(v, list) else []
+            for k, v in data.items()}

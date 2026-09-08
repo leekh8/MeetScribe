@@ -124,6 +124,20 @@ python cli.py --apply-terms answers.json
 { "스프랑크": "Splunk", "에이미": "" }
 ```
 
+### 사람 이름
+
+한 사람이 여러 호칭으로 불리면 호칭마다 다른 토큰이 되어 회의마다 다시 후보로 올라온다.
+`people.local.json`(gitignore됨)에 사람 단위로 묶어 두면 별칭과 그 조각까지 한 번에 빠진다.
+
+```json
+{
+  "이규해": ["이규해 주임", "규해 주임", "규주"],
+  "박주현": ["박주현 차장", "주현 팀장", "팀장님"]
+}
+```
+
+호칭은 교정하지 않고 후보에서 빼기만 한다. "팀장님"을 이름으로 바꾸면 한 말이 달라진다.
+
 후보는 모델 없이 세 신호로 찾는다.
 
 | 신호 | 잡아내는 것 | 예 |
@@ -144,7 +158,7 @@ python cli.py --apply-terms answers.json
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest              # 71 tests
+python -m pytest              # 74 tests
 ```
 
 전사(faster-whisper), 화자 분리(pyannote)처럼 대용량 모델이나 외부 실행이 필요한 부분은

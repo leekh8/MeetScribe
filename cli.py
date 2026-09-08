@@ -48,8 +48,13 @@ def _suggest_terms(paths: list[Path], out_dir: Path, limit: int) -> None:
     """전사본에서 교정 후보를 뽑아 질문지(md)와 기계 판독용(json)을 낸다."""
     import json as _json
 
-    from meetscribe.config import load_corrections, load_ignored
-    from meetscribe.vocab import find_candidates, load_corpus, render_questions
+    from meetscribe.config import load_corrections, load_ignored, load_people
+    from meetscribe.vocab import (
+        find_candidates,
+        load_corpus,
+        people_surface_forms,
+        render_questions,
+    )
 
     missing = [p for p in paths if not p.exists()]
     if missing:
@@ -59,8 +64,8 @@ def _suggest_terms(paths: list[Path], out_dir: Path, limit: int) -> None:
     if not docs:
         _fail("읽을 전사본이 없습니다 (md 또는 json 필요).")
 
-    candidates = find_candidates(docs, load_corrections(),
-                                 ignored=load_ignored(), limit=limit)
+    skip = load_ignored() | people_surface_forms(load_people())
+    candidates = find_candidates(docs, load_corrections(), ignored=skip, limit=limit)
     if not candidates:
         print("교정 후보 없음 — 사전이 이미 충분하거나 표본이 작습니다.")
         return

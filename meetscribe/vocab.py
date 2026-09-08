@@ -195,6 +195,23 @@ def translit_ratio(token: str) -> float:
 
 # ── 발굴 ────────────────────────────────────────────────────────────────────
 
+def people_surface_forms(people: dict) -> set[str]:
+    """호칭 전체와 그것을 쪼갠 조각까지 모은다.
+
+    "규해 주임"은 띄어쓰기 때문에 "규해"와 "주임" 두 토큰으로 잡힌다.
+    통째로만 빼면 조각이 그대로 후보에 남으므로 조각도 함께 넣는다.
+    """
+    forms: set[str] = set()
+    for canonical, aliases in people.items():
+        for name in [canonical, *aliases]:
+            name = (name or "").strip()
+            if not name:
+                continue
+            forms.add(name)
+            forms.update(tokenize(name))
+    return forms
+
+
 def _known_surface(corrections: dict) -> set[str]:
     """이미 사전이 다루는 표기. 키와 값 양쪽 모두 다시 묻지 않는다."""
     known = set()
