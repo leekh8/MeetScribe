@@ -23,6 +23,9 @@ DEFAULT_HOST = "http://localhost:11434"
 # CPU 추론은 느리다. 조각 하나에 수 분이 걸릴 수 있어 넉넉히 잡는다.
 CALL_TIMEOUT = 900
 CHUNK_CHARS = 3500
+# 짧은 발화를 이 길이까지 이어 붙인다. 전사본은 발화당 7~15자로 잘게 끊겨 있어
+# 그대로 넣으면 모델이 문맥을 못 잡고 한 줄에 꽂힌다.
+MERGE_CHARS = 200
 
 
 @dataclass
@@ -32,13 +35,26 @@ class Summary:
     action_items: list[dict] = field(default_factory=list)  # {owner, task, due}
 
 
-def _segments_to_transcript(segments: list[dict]) -> str:
-    lines = []
+def _segments_to_transcript(segments: list[dict], merge_chars: int = 0) -> str:
+    """세그먼트를 전사본 텍스트로. merge_chars를 주면 짧은 발화를 이어 붙인다.
+
+    전사본은 발화당 평균 7~15자로 잘게 끊겨 있다. 그대로 넣으면 모델이 문맥 없는
+    수백 개의 조각을 보게 되어, 실제 논의를 놓치고 한 줄에 꽂혀 엉뚱한 것을 뽑는다.
+    화자가 바뀌면 끊고, 같은 화자 안에서만 길이로 묶는다.
+    """
+    lines: list[list[str]] = []
     for seg in segments:
-        speaker = seg.get("speaker")
-        prefix = f"{speaker}: " if speaker else ""
-        lines.append(f"{prefix}{seg['text']}")
-    return "\n".join(lines)
+        speaker = seg.get("speaker") or ""
+        text = (seg.get("text") or "").strip()
+        if not text:
+            continue
+        if (merge_chars and lines and lines[-1][0] == speaker
+                and len(lines[-1][1]) < merge_chars):
+            lines[-1][1] = f"{lines[-1][1]} {text}"
+        else:
+            prefix = f"{speaker}: " if speaker else ""
+            lines.append([speaker, f"{prefix}{text}"])
+    return "\n".join(line for _, line in lines)
 
 
 # ── 백엔드 ──────────────────────────────────────────────────────────────────
@@ -139,12 +155,20 @@ _SYSTEM = (
 _MAP_PROMPT = """다음은 회의 전사본의 일부다. 이 부분에서만 뽑아라.
 
 {{
-  "topics": ["다룬 주제를 짧은 구로", ...],
-  "decisions": ["확정된 결정만. 논의 중인 것은 넣지 않는다", ...],
-  "action_items": [{{"owner": "담당자 또는 빈 문자열", "task": "할 일", "due": "기한 또는 빈 문자열"}}, ...]
+  "topics": ["다룬 주제를 짧은 구로"],
+  "decisions": ["확정된 결정만. 논의 중인 것은 넣지 않는다"],
+  "action_items": [{{"owner": "", "task": "할 일", "due": ""}}]
 }}
 
-해당 항목이 없으면 빈 배열로 둔다.
+규칙:
+- 해당 항목이 없으면 빈 배열로 둔다. 잡담이나 진행 대화만 있는 부분에는 결정도 액션도 없다.
+  억지로 채우지 마라. 빈 배열이 정답인 경우가 많다.
+- owner는 전사본에 이름이 실제로 나온 경우에만 적는다. "개발자", "담당자", "팀 리더" 같은
+  직책을 지어내지 마라. 모르면 "" 로 둔다.
+- due는 전사본에 날짜나 요일이 실제로 나온 경우에만 적는다. 날짜를 추측하지 마라.
+  모르면 "" 로 둔다.
+- "빈 문자열", "없음", "미정" 같은 말을 값으로 쓰지 마라. 비어 있으면 "" 다.
+- 한 문장에만 나오고 앞뒤와 이어지지 않는 말은 뽑지 않는다. 전사 오류일 가능성이 크다.
 
 전사본:
 {chunk}"""
@@ -153,11 +177,15 @@ _REDUCE_PROMPT = """아래는 한 회의를 여러 조각으로 나눠 정리한
 
 {{
   "overview": "회의 전체를 3~5문장으로",
-  "decisions": ["중복을 제거한 결정사항", ...],
-  "action_items": [{{"owner": "", "task": "", "due": ""}}, ...]
+  "decisions": ["중복을 제거한 결정사항"],
+  "action_items": [{{"owner": "", "task": "", "due": ""}}]
 }}
 
-같은 내용이 여러 조각에 있으면 하나로 합친다. 없는 내용을 만들지 않는다.
+규칙:
+- 같은 내용이 여러 조각에 있으면 하나로 합친다.
+- 조각에 없는 내용을 새로 만들지 않는다. 특히 owner와 due는 조각에 있는 값만 옮긴다.
+  비어 있던 것을 채우지 마라.
+- "빈 문자열", "없음", "미정" 같은 말을 값으로 쓰지 마라. 비어 있으면 "" 다.
 
 조각별 정리:
 {parts}"""
@@ -169,6 +197,38 @@ def _as_list(value) -> list:
     return value if isinstance(value, list) else []
 
 
+# 모델이 값 자리에 설명어를 그대로 적는 경우가 있다("owner": "빈 문자열").
+# 프롬프트로만 막으면 새는 날이 있어 코드에서 한 번 더 거른다.
+_PLACEHOLDER = {"", "-", "빈 문자열", "빈문자열", "없음", "미정", "해당 없음", "해당없음",
+                "unknown", "n/a", "na", "null", "none", "tbd"}
+
+
+def _clean(value) -> str:
+    text = str(value if value is not None else "").strip()
+    return "" if text.lower() in _PLACEHOLDER else text
+
+
+def _clean_actions(items) -> list[dict]:
+    """액션아이템을 owner/task/due 세 칸으로 정규화한다. 할 일이 없으면 버린다."""
+    cleaned = []
+    for item in _as_list(items):
+        if not isinstance(item, dict):
+            continue
+        task = _clean(item.get("task"))
+        if not task:
+            continue
+        cleaned.append({
+            "owner": _clean(item.get("owner")),
+            "task": task,
+            "due": _clean(item.get("due")),
+        })
+    return cleaned
+
+
+def _clean_decisions(items) -> list[str]:
+    return [d for d in (_clean(x) for x in _as_list(items)) if d]
+
+
 def summarize(segments: list[dict], *, model: str = DEFAULT_MODEL,
               host: str = DEFAULT_HOST, progress: bool = True,
               chunk_chars: int = CHUNK_CHARS) -> Summary:
@@ -177,7 +237,7 @@ def summarize(segments: list[dict], *, model: str = DEFAULT_MODEL,
         return Summary()
 
     check_backend(host, model)
-    chunks = chunk_transcript(_segments_to_transcript(segments), chunk_chars)
+    chunks = chunk_transcript(_segments_to_transcript(segments, MERGE_CHARS), chunk_chars)
 
     parts = []
     for i, chunk in enumerate(chunks, 1):
@@ -194,9 +254,10 @@ def summarize(segments: list[dict], *, model: str = DEFAULT_MODEL,
     if len(parts) == 1:
         only = parts[0]
         return Summary(
-            overview=" ".join(str(t) for t in _as_list(only.get("topics"))),
-            decisions=[str(d) for d in _as_list(only.get("decisions"))],
-            action_items=[a for a in _as_list(only.get("action_items")) if isinstance(a, dict)],
+            overview=", ".join(dict.fromkeys(
+                t for t in (_clean(x) for x in _as_list(only.get("topics"))) if t)),
+            decisions=_clean_decisions(only.get("decisions")),
+            action_items=_clean_actions(only.get("action_items")),
         )
 
     if progress:
@@ -210,13 +271,18 @@ def summarize(segments: list[dict], *, model: str = DEFAULT_MODEL,
     if not merged:
         return Summary(
             overview="",
-            decisions=[str(d) for p in parts for d in _as_list(p.get("decisions"))],
-            action_items=[a for p in parts for a in _as_list(p.get("action_items"))
-                          if isinstance(a, dict)],
+            decisions=[d for p in parts for d in _clean_decisions(p.get("decisions"))],
+            action_items=[a for p in parts for a in _clean_actions(p.get("action_items"))],
         )
 
+    overview = str(merged.get("overview", "")).strip()
+    if not overview:
+        # 병합이 개요를 비워 오는 경우가 있다. 수 분을 쓰고 빈 요약을 받지 않게 주제라도 남긴다.
+        topics = [t for p in parts for t in
+                  (_clean(x) for x in _as_list(p.get("topics"))) if t]
+        overview = ", ".join(dict.fromkeys(topics))
     return Summary(
-        overview=str(merged.get("overview", "")),
-        decisions=[str(d) for d in _as_list(merged.get("decisions"))],
-        action_items=[a for a in _as_list(merged.get("action_items")) if isinstance(a, dict)],
+        overview=overview,
+        decisions=_clean_decisions(merged.get("decisions")),
+        action_items=_clean_actions(merged.get("action_items")),
     )

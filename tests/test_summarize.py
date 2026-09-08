@@ -107,7 +107,8 @@ def test_multiple_chunks_are_merged(stub_backend):
         {"topics": ["B"], "decisions": ["결정 2"], "action_items": []},
         {"overview": "두 가지를 정했다", "decisions": ["결정 1", "결정 2"], "action_items": []},
     ])
-    segs = [_seg("가" * 15, i) for i in range(2)]
+    # 화자가 다르면 병합되지 않아 줄이 유지된다.
+    segs = [_seg("가" * 15, 0, speaker="A"), _seg("나" * 15, 1, speaker="B")]
     result = S.summarize(segs, progress=False, chunk_chars=20)
     assert len(calls) == 3                       # map 2번 + reduce 1번
     assert result.overview == "두 가지를 정했다"
@@ -129,10 +130,10 @@ def test_failed_merge_keeps_chunk_results(stub_backend, monkeypatch):
         return {} if "조각별 정리" in prompt else responses[min(len(calls) - 1, 1)]
 
     monkeypatch.setattr(S, "_chat", fake_chat)
-    result = S.summarize([_seg("가" * 15, i) for i in range(2)],
+    result = S.summarize([_seg("가" * 15, 0, speaker="A"), _seg("나" * 15, 1, speaker="B")],
                          progress=False, chunk_chars=20)
     assert result.decisions == ["결정 1", "결정 2"]
-    assert result.action_items == [{"task": "일 1"}]
+    assert result.action_items == [{"owner": "", "task": "일 1", "due": ""}]
 
 
 def test_all_chunks_unparseable_raises(stub_backend):
@@ -190,3 +191,78 @@ def test_check_backend_explains_connection_failure(monkeypatch):
     monkeypatch.setattr(S.urllib.request, "urlopen", boom)
     with pytest.raises(RuntimeError, match="ollama serve"):
         S.check_backend()
+
+
+def test_merge_joins_short_utterances_of_the_same_speaker():
+    segs = [_seg("짧은 말", i, speaker="A") for i in range(5)]
+    merged = S._segments_to_transcript(segs, merge_chars=200)
+    assert merged == "A: 짧은 말 짧은 말 짧은 말 짧은 말 짧은 말"
+
+
+def test_merge_breaks_when_speaker_changes():
+    segs = [_seg("가", 0, speaker="A"), _seg("나", 1, speaker="B"), _seg("다", 2, speaker="A")]
+    assert S._segments_to_transcript(segs, merge_chars=200).splitlines() == [
+        "A: 가", "B: 나", "A: 다",
+    ]
+
+
+def test_merge_is_off_by_default():
+    segs = [_seg("짧은 말", i, speaker="A") for i in range(3)]
+    assert len(S._segments_to_transcript(segs).splitlines()) == 3
+
+
+def test_merge_skips_blank_text():
+    assert S._segments_to_transcript([_seg("  ", 0), _seg("내용", 1)], 200) == "내용"
+
+
+def test_overview_falls_back_to_topics_when_merge_returns_none(monkeypatch):
+    # 몇 분을 쓰고 빈 개요를 받지 않도록 조각의 주제로 메운다.
+    monkeypatch.setattr(S, "check_backend", lambda *a, **k: None)
+    responses = [
+        {"topics": ["OpenVAS 패턴"], "decisions": [], "action_items": []},
+        {"topics": ["Nuclei 템플릿"], "decisions": [], "action_items": []},
+        {"overview": "", "decisions": [], "action_items": []},
+    ]
+    calls = []
+
+    def fake_chat(prompt, system, model, host):
+        calls.append(prompt)
+        return responses[min(len(calls) - 1, 2)]
+
+    monkeypatch.setattr(S, "_chat", fake_chat)
+    result = S.summarize([_seg("가" * 15, 0, speaker="A"), _seg("나" * 15, 1, speaker="B")],
+                         progress=False, chunk_chars=20)
+    assert result.overview == "OpenVAS 패턴, Nuclei 템플릿"
+
+
+# ── 지어낸 값 걸러내기 ──────────────────────────────────────────────────────
+
+def test_placeholder_words_become_empty(stub_backend):
+    # 모델이 "owner": "빈 문자열" 처럼 설명어를 값에 그대로 적는 경우가 있다.
+    stub_backend([{
+        "topics": ["주제"],
+        "decisions": ["결정", "없음", "   "],
+        "action_items": [{"owner": "빈 문자열", "task": "할 일", "due": "미정"}],
+    }])
+    result = S.summarize([_seg("무엇")], progress=False)
+    assert result.decisions == ["결정"]
+    assert result.action_items == [{"owner": "", "task": "할 일", "due": ""}]
+
+
+def test_action_item_without_task_is_dropped(stub_backend):
+    stub_backend([{
+        "topics": [],
+        "decisions": [],
+        "action_items": [{"owner": "규주", "task": "", "due": "월요일"},
+                         {"owner": "", "task": "실제 할 일", "due": ""}],
+    }])
+    result = S.summarize([_seg("무엇")], progress=False)
+    assert result.action_items == [{"owner": "", "task": "실제 할 일", "due": ""}]
+
+
+def test_action_items_are_normalised_to_three_fields(stub_backend):
+    # 모델이 키를 빠뜨리거나 더 넣어도 렌더가 기대하는 세 칸으로 맞춘다.
+    stub_backend([{"topics": [], "decisions": [],
+                   "action_items": [{"task": "할 일", "priority": "high"}]}])
+    result = S.summarize([_seg("무엇")], progress=False)
+    assert result.action_items == [{"owner": "", "task": "할 일", "due": ""}]
