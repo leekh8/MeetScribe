@@ -74,6 +74,7 @@ def stub_backend(monkeypatch):
 
     def _install(responses):
         monkeypatch.setattr(S, "check_backend", lambda *a, **k: None)
+        monkeypatch.setattr(S, "release_model", lambda *a, **k: None)
 
         def fake_chat(prompt, system, model, host):
             calls.append(prompt)
@@ -124,6 +125,7 @@ def test_failed_merge_keeps_chunk_results(stub_backend, monkeypatch):
     calls = []
 
     monkeypatch.setattr(S, "check_backend", lambda *a, **k: None)
+    monkeypatch.setattr(S, "release_model", lambda *a, **k: None)
 
     def fake_chat(prompt, system, model, host):
         calls.append(prompt)
@@ -266,3 +268,32 @@ def test_action_items_are_normalised_to_three_fields(stub_backend):
                    "action_items": [{"task": "할 일", "priority": "high"}]}])
     result = S.summarize([_seg("무엇")], progress=False)
     assert result.action_items == [{"owner": "", "task": "할 일", "due": ""}]
+
+
+def test_model_is_released_after_summarising(monkeypatch):
+    # 요약이 끝나면 3GB를 물고 있지 않아야 한다.
+    released = []
+    monkeypatch.setattr(S, "check_backend", lambda *a, **k: None)
+    monkeypatch.setattr(S, "release_model", lambda *a, **k: released.append(True))
+    monkeypatch.setattr(S, "_chat", lambda *a, **k: {"topics": ["주제"]})
+    S.summarize([_seg("무엇")], progress=False)
+    assert released == [True]
+
+
+def test_model_is_released_even_when_it_fails(monkeypatch):
+    monkeypatch.setattr(S, "check_backend", lambda *a, **k: None)
+    released = []
+    monkeypatch.setattr(S, "release_model", lambda *a, **k: released.append(True))
+    monkeypatch.setattr(S, "_chat", lambda *a, **k: {})
+    with pytest.raises(RuntimeError):
+        S.summarize([_seg("무엇")], progress=False)
+    assert released == [True]
+
+
+def test_empty_input_does_not_touch_the_backend(monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("백엔드를 건드리면 안 된다")
+
+    monkeypatch.setattr(S, "release_model", boom)
+    monkeypatch.setattr(S, "check_backend", boom)
+    assert S.summarize([]) == S.Summary()

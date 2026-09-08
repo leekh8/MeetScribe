@@ -42,6 +42,15 @@ winget install Ollama.Ollama     # 또는 https://ollama.com/download
 ollama pull gemma3:4b            # 약 3.3GB
 ```
 
+GPU가 없으면 CPU로 돈다. 코어를 전부 쓰면 요약이 도는 동안 다른 일을 못 하므로
+두 개를 남긴다(`os.cpu_count() - 2`). 요약이 끝나면 모델을 RAM에서 바로 내린다.
+Ollama 기본값은 5분간 올려 두는 것이라, 그대로 두면 3GB를 계속 물고 있다.
+
+```bash
+ollama ps               # 지금 올라와 있는 모델
+ollama stop gemma3:4b   # 손으로 내리기
+```
+
 Whisper 모델은 첫 실행 시 자동 다운로드된다(medium ≈ 1.5GB, large-v3 ≈ 3GB).
 
 ## 사용법
@@ -158,7 +167,7 @@ python cli.py --apply-terms answers.json
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest              # 74 tests
+python -m pytest              # 85 tests
 ```
 
 전사(faster-whisper), 화자 분리(pyannote)처럼 대용량 모델이나 외부 실행이 필요한 부분은

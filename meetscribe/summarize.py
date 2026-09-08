@@ -12,6 +12,7 @@ GPU 없이 도는 것을 전제로 하므로 호출 횟수를 줄이는 쪽으�
 from __future__ import annotations
 
 import json
+import os
 import re
 import urllib.error
 import urllib.request
@@ -19,6 +20,10 @@ from dataclasses import dataclass, field
 
 DEFAULT_MODEL = "gemma3:4b"
 DEFAULT_HOST = "http://localhost:11434"
+
+# 코어를 전부 쓰면 요약이 도는 동안 노트북을 못 쓴다. 두 개는 남긴다.
+# 그만큼 느려지지만, 배치로 돌려 두고 다른 일을 하는 쓰임에는 이쪽이 맞다.
+NUM_THREAD = max(1, (os.cpu_count() or 4) - 2)
 
 # CPU 추론은 느리다. 조각 하나에 수 분이 걸릴 수 있어 넉넉히 잡는다.
 CALL_TIMEOUT = 900
@@ -89,7 +94,7 @@ def _chat(prompt: str, system: str, model: str, host: str) -> dict:
         "stream": False,
         "format": "json",
         # 요약은 창작이 아니다. 온도를 0으로 두어 같은 입력에 같은 결과가 나오게 한다.
-        "options": {"temperature": 0},
+        "options": {"temperature": 0, "num_thread": NUM_THREAD},
     }
     req = urllib.request.Request(
         f"{host}/api/chat",
@@ -102,6 +107,26 @@ def _chat(prompt: str, system: str, model: str, host: str) -> dict:
     except urllib.error.URLError as e:
         raise RuntimeError(f"Ollama 호출 실패: {e}") from e
     return _parse_json(body.get("message", {}).get("content", ""))
+
+
+def release_model(host: str = DEFAULT_HOST, model: str = DEFAULT_MODEL) -> None:
+    """모델을 RAM에서 즉시 내린다.
+
+    Ollama는 마지막 요청 뒤 5분간 모델을 올려 둔다. 3GB짜리가 그대로 남아 있으면
+    요약이 끝난 뒤에도 노트북이 무겁다. 다 쓰면 바로 반납한다.
+    실패해도 무시한다. 반납은 부수 작업이지 결과를 좌우하지 않는다.
+    """
+    payload = {"model": model, "messages": [], "keep_alive": 0}
+    req = urllib.request.Request(
+        f"{host}/api/chat",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30):
+            pass
+    except (urllib.error.URLError, OSError):
+        pass
 
 
 def _parse_json(text: str) -> dict:
@@ -232,10 +257,20 @@ def _clean_decisions(items) -> list[str]:
 def summarize(segments: list[dict], *, model: str = DEFAULT_MODEL,
               host: str = DEFAULT_HOST, progress: bool = True,
               chunk_chars: int = CHUNK_CHARS) -> Summary:
-    """전사 세그먼트 → 요약, 결정사항, 액션아이템."""
+    """전사 세그먼트 → 요약, 결정사항, 액션아이템.
+
+    끝나면 모델을 RAM에서 내린다. 실패로 끝나도 마찬가지다.
+    """
     if not segments:
         return Summary()
+    try:
+        return _run_summary(segments, model, host, progress, chunk_chars)
+    finally:
+        release_model(host, model)
 
+
+def _run_summary(segments: list[dict], model: str, host: str,
+                 progress: bool, chunk_chars: int) -> Summary:
     check_backend(host, model)
     chunks = chunk_transcript(_segments_to_transcript(segments, MERGE_CHARS), chunk_chars)
 
