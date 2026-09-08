@@ -23,6 +23,7 @@ samples/*.mp3
 
 # 개인·조직 특화 용어 사전 (조직 정보 유출 방지)
 corrections.local.json
+vocab_ignore.local.json
 
 # LLM 자격증명
 .env

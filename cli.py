@@ -48,7 +48,7 @@ def _suggest_terms(paths: list[Path], out_dir: Path, limit: int) -> None:
     """전사본에서 교정 후보를 뽑아 질문지(md)와 기계 판독용(json)을 낸다."""
     import json as _json
 
-    from meetscribe.config import load_corrections
+    from meetscribe.config import load_corrections, load_ignored
     from meetscribe.vocab import find_candidates, load_corpus, render_questions
 
     missing = [p for p in paths if not p.exists()]
@@ -59,7 +59,8 @@ def _suggest_terms(paths: list[Path], out_dir: Path, limit: int) -> None:
     if not docs:
         _fail("읽을 전사본이 없습니다 (md 또는 json 필요).")
 
-    candidates = find_candidates(docs, load_corrections(), limit=limit)
+    candidates = find_candidates(docs, load_corrections(),
+                                 ignored=load_ignored(), limit=limit)
     if not candidates:
         print("교정 후보 없음 — 사전이 이미 충분하거나 표본이 작습니다.")
         return
@@ -81,7 +82,7 @@ def _apply_terms(answers_path: Path) -> None:
     """답변 JSON을 개인 사전에 병합한다."""
     import json as _json
 
-    from meetscribe.config import LOCAL_DICT_PATH
+    from meetscribe.config import LOCAL_DICT_PATH, LOCAL_IGNORE_PATH
     from meetscribe.vocab import merge_answers
 
     if not answers_path.exists():
@@ -93,8 +94,10 @@ def _apply_terms(answers_path: Path) -> None:
     if not isinstance(answers, dict):
         _fail('답변 파일은 {"오인식": "정답"} 형태의 객체여야 합니다.')
 
-    added, updated = merge_answers(answers, LOCAL_DICT_PATH)
+    added, updated, ignored = merge_answers(answers, LOCAL_DICT_PATH, LOCAL_IGNORE_PATH)
     print(f"사전 반영: 추가 {added}건 / 갱신 {updated}건 → {LOCAL_DICT_PATH}")
+    if ignored:
+        print(f"무시 목록: {ignored}건 추가 → {LOCAL_IGNORE_PATH} (값이 빈 항목)")
 
 
 def main():
@@ -103,7 +106,8 @@ def main():
     parser.add_argument("--suggest-terms", nargs="+", metavar="PATH", default=None,
                         help="전사본(md/json)에서 교정 후보를 뽑아 질문지 생성")
     parser.add_argument("--apply-terms", metavar="JSON", type=Path, default=None,
-                        help='답변 JSON({"오인식":"정답"})을 corrections.local.json에 병합')
+                        help='답변 JSON({"오인식":"정답"})을 병합. '
+                             '값이 비면 오인식이 아닌 것으로 보고 무시 목록에 넣는다')
     parser.add_argument("--limit", type=int, default=60,
                         help="질문지에 담을 후보 수 (기본 60)")
     parser.add_argument("--model", default=DEFAULT_MODEL,

@@ -205,12 +205,14 @@ def _known_surface(corrections: dict) -> set[str]:
 
 
 def find_candidates(docs: list[dict], corrections: dict | None = None, *,
+                    ignored: set | None = None,
                     min_count: int = 3, max_docs_ratio: float = 0.6,
                     limit: int = 60) -> list[Candidate]:
     """세 신호를 합쳐 물어볼 후보를 점수순으로 돌려준다."""
     corrections = corrections or {}
     known = _known_surface(corrections)
-    people = {s for d in docs for s in d["speakers"]}
+    # 화자 목록에 없는 인명은 계속 후보로 올라온다. 한 번 아니라고 하면 다시 묻지 않는다.
+    people = {s for d in docs for s in d["speakers"]} | (ignored or set())
 
     n_docs = max(len(docs), 1)
     tf: Counter[str] = Counter()
@@ -339,8 +341,12 @@ def render_questions(candidates: list[Candidate], docs: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def merge_answers(answers: dict, path: Path) -> tuple[int, int]:
-    """답변을 corrections.local.json에 병합한다. (추가, 갱신) 건수를 돌려준다.
+def merge_answers(answers: dict, path: Path,
+                  ignore_path: Path | None = None) -> tuple[int, int, int]:
+    """답변을 병합한다. (추가, 갱신, 무시등록) 건수를 돌려준다.
+
+    값이 비어 있으면 "오인식이 아니다"라는 뜻으로 보고 무시 목록에 넣는다.
+    인명처럼 교정 대상이 아닌 말을 매번 다시 묻지 않기 위한 경로다.
 
     기존 파일을 통째로 갈아엎지 않는다. 이미 있는 항목은 값이 달라질 때만 덮어쓴다.
     """
@@ -353,10 +359,28 @@ def merge_answers(answers: dict, path: Path) -> tuple[int, int]:
         except (json.JSONDecodeError, OSError):
             current = {}
 
-    added = updated = 0
+    ignored: set[str] = set()
+    if ignore_path is not None and ignore_path.exists():
+        try:
+            loaded = json.loads(ignore_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, list):
+                ignored = {str(x) for x in loaded}
+        except (json.JSONDecodeError, OSError):
+            ignored = set()
+
+    added = updated = skipped = 0
     for wrong, right in answers.items():
-        wrong, right = wrong.strip(), right.strip()
-        if not wrong or not right or wrong == right:
+        wrong = (wrong or "").strip()
+        right = (right or "").strip() if right is not None else ""
+        if not wrong:
+            continue
+        if not right:
+            # 오인식이 아니라는 답. 사전이 아니라 무시 목록으로 보낸다.
+            if ignore_path is not None and wrong not in ignored:
+                ignored.add(wrong)
+                skipped += 1
+            continue
+        if wrong == right:
             continue
         if wrong not in current:
             added += 1
@@ -371,4 +395,9 @@ def merge_answers(answers: dict, path: Path) -> tuple[int, int]:
             json.dumps(dict(sorted(current.items())), ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
-    return added, updated
+    if skipped and ignore_path is not None:
+        ignore_path.write_text(
+            json.dumps(sorted(ignored), ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    return added, updated, skipped

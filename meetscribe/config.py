@@ -6,6 +6,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUTPUT_DIR = ROOT / "out"
 LOCAL_DICT_PATH = ROOT / "corrections.local.json"
+# 오인식이 아닌데 후보로 올라오는 말(인명 등). 사전에 넣을 수 없어 따로 둔다.
+LOCAL_IGNORE_PATH = ROOT / "vocab_ignore.local.json"
 
 DEFAULT_MODEL = "medium"
 DEFAULT_LANGUAGE = "ko"
@@ -45,3 +47,15 @@ def load_corrections() -> dict:
         except (json.JSONDecodeError, OSError) as e:
             print(f"경고: {LOCAL_DICT_PATH.name} 로드 실패 ({e}) — 기본 사전만 사용")
     return corrections
+
+
+def load_ignored() -> set:
+    """다시 묻지 않을 말 목록. 오인식이 아니라 교정 대상이 아닌 것들이다."""
+    if not LOCAL_IGNORE_PATH.exists():
+        return set()
+    try:
+        data = json.loads(LOCAL_IGNORE_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"경고: {LOCAL_IGNORE_PATH.name} 로드 실패 ({e}) - 무시 목록 없이 진행")
+        return set()
+    return {str(x) for x in data} if isinstance(data, list) else set()

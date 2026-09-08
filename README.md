@@ -117,6 +117,13 @@ python cli.py --suggest-terms path/to/transcripts
 python cli.py --apply-terms answers.json
 ```
 
+값을 비워 두면 "오인식이 아니다"라는 뜻이 된다. 사전이 아니라 `vocab_ignore.local.json`으로
+가서 다음부터 후보에 안 뜬다. 화자 목록에 없는 인명이 매번 다시 올라오는 것을 막는 경로다.
+
+```json
+{ "스프랑크": "Splunk", "에이미": "" }
+```
+
 후보는 모델 없이 세 신호로 찾는다.
 
 | 신호 | 잡아내는 것 | 예 |
@@ -137,7 +144,7 @@ python cli.py --apply-terms answers.json
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest              # 68 tests
+python -m pytest              # 71 tests
 ```
 
 전사(faster-whisper), 화자 분리(pyannote)처럼 대용량 모델이나 외부 실행이 필요한 부분은

@@ -154,12 +154,12 @@ def test_render_questions_lists_every_candidate():
 
 def test_merge_answers_creates_and_updates(tmp_path):
     path = tmp_path / "corrections.local.json"
-    assert merge_answers({"스프랑크": "Splunk"}, path) == (1, 0)
+    assert merge_answers({"스프랑크": "Splunk"}, path) == (1, 0, 0)
     assert json.loads(path.read_text(encoding="utf-8")) == {"스프랑크": "Splunk"}
 
     # 같은 값은 갱신으로 세지 않고, 새 항목만 추가된다.
-    assert merge_answers({"스프랑크": "Splunk", "소아": "SOAR"}, path) == (1, 0)
-    assert merge_answers({"스프랑크": "splunk"}, path) == (0, 1)
+    assert merge_answers({"스프랑크": "Splunk", "소아": "SOAR"}, path) == (1, 0, 0)
+    assert merge_answers({"스프랑크": "splunk"}, path) == (0, 1, 0)
     assert json.loads(path.read_text(encoding="utf-8"))["스프랑크"] == "splunk"
 
 
@@ -172,5 +172,28 @@ def test_merge_answers_keeps_existing_entries(tmp_path):
 
 def test_merge_answers_skips_empty_and_identity(tmp_path):
     path = tmp_path / "corrections.local.json"
-    assert merge_answers({"": "X", "Y": "", "같음": "같음"}, path) == (0, 0)
+    assert merge_answers({"": "X", "Y": "", "같음": "같음"}, path) == (0, 0, 0)
     assert not path.exists()
+
+
+def test_empty_answer_goes_to_the_ignore_list(tmp_path):
+    # 오인식이 아니라는 답(인명 등)은 사전이 아니라 무시 목록으로 간다.
+    dict_path = tmp_path / "corrections.local.json"
+    ignore_path = tmp_path / "vocab_ignore.local.json"
+    assert merge_answers({"에이미": "", "소아": "SOAR"}, dict_path, ignore_path) == (1, 0, 1)
+    assert json.loads(ignore_path.read_text(encoding="utf-8")) == ["에이미"]
+    assert "에이미" not in json.loads(dict_path.read_text(encoding="utf-8"))
+
+
+def test_ignore_list_is_not_duplicated(tmp_path):
+    dict_path = tmp_path / "corrections.local.json"
+    ignore_path = tmp_path / "vocab_ignore.local.json"
+    merge_answers({"에이미": ""}, dict_path, ignore_path)
+    assert merge_answers({"에이미": ""}, dict_path, ignore_path) == (0, 0, 0)
+
+
+def test_ignored_terms_are_not_asked_again():
+    docs = [_doc("a", ["에이미 확인 " * 4]), _doc("b", ["다른 회의"])]
+    assert any(c.token == "에이미" for c in find_candidates(docs, {}))
+    assert not any(c.token == "에이미"
+                   for c in find_candidates(docs, {}, ignored={"에이미"}))
