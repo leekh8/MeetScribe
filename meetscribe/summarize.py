@@ -1,10 +1,28 @@
-"""LLM 요약·액션아이템 추출 (Phase 3).
+"""LLM 요약, 액션아이템 추출 (Phase 3).
 
-전사 전문을 받아 요약 / 결정사항 / 액션아이템을 뽑는다.
-백엔드는 교체 가능(Claude API 기본, 향후 로컬 LLM). 자격증명이 없으면 명확히 중단한다.
+로컬 Ollama로 돌린다. 이 프로젝트의 전제는 "녹음이 기기 밖으로 나가지 않는다"이므로
+요약만 외부 API로 보내면 그 전제가 무너진다. 품질이 아니라 그것이 로컬을 쓰는 이유다.
+
+한 시간짜리 회의는 한 번에 넣지 않는다. 조각별로 뽑고(map) 한 번 더 합친다(reduce).
+GPU 없이 도는 것을 전제로 하므로 호출 횟수를 줄이는 쪽으로 조각을 크게 잡는다.
+
+의존성을 늘리지 않으려고 HTTP는 표준 라이브러리로 직접 부른다.
 """
 
+from __future__ import annotations
+
+import json
+import re
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
+
+DEFAULT_MODEL = "gemma3:4b"
+DEFAULT_HOST = "http://localhost:11434"
+
+# CPU 추론은 느리다. 조각 하나에 수 분이 걸릴 수 있어 넉넉히 잡는다.
+CALL_TIMEOUT = 900
+CHUNK_CHARS = 3500
 
 
 @dataclass
@@ -23,18 +41,182 @@ def _segments_to_transcript(segments: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def summarize(segments: list[dict], api_key: str | None = None,
-              model: str = "claude-opus-4-8") -> Summary:
-    """전사 → 요약. (Phase 3 구현 예정)
+# ── 백엔드 ──────────────────────────────────────────────────────────────────
 
-    Claude API로 요약/결정/액션아이템을 구조화 추출한다. 프롬프트·스키마는 Phase 3에서 확정.
-    """
+def check_backend(host: str = DEFAULT_HOST, model: str = DEFAULT_MODEL) -> None:
+    """모델이 준비됐는지 미리 본다. 전사는 수십 분이 걸리므로 그 전에 실패시킨다."""
     try:
-        import anthropic  # noqa: F401
-    except ImportError:
+        with urllib.request.urlopen(f"{host}/api/tags", timeout=10) as resp:
+            tags = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.URLError as e:
         raise RuntimeError(
-            "LLM 요약에는 anthropic 패키지가 필요합니다.\n"
-            "  1) requirements.txt에서 anthropic 주석 해제 후 pip install\n"
-            "  2) ANTHROPIC_API_KEY 환경변수 또는 --api-key 로 키 전달"
+            f"Ollama에 연결할 수 없습니다 ({host}): {e.reason}\n"
+            "  ollama serve 로 데몬을 띄우거나 Ollama 앱이 실행 중인지 확인하세요."
+        ) from e
+
+    names = {m.get("name", "") for m in tags.get("models", [])}
+    if model not in names and f"{model}:latest" not in names:
+        raise RuntimeError(
+            f"모델 '{model}'이 없습니다. 받은 모델: {', '.join(sorted(names)) or '없음'}\n"
+            f"  ollama pull {model}"
         )
-    raise NotImplementedError("summarize()는 Phase 3에서 구현 예정 — 전사 구조는 이미 준비됨")
+
+
+def _chat(prompt: str, system: str, model: str, host: str) -> dict:
+    """Ollama에 한 번 물어 JSON 객체를 받는다."""
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ],
+        "stream": False,
+        "format": "json",
+        # 요약은 창작이 아니다. 온도를 0으로 두어 같은 입력에 같은 결과가 나오게 한다.
+        "options": {"temperature": 0},
+    }
+    req = urllib.request.Request(
+        f"{host}/api/chat",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=CALL_TIMEOUT) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"Ollama 호출 실패: {e}") from e
+    return _parse_json(body.get("message", {}).get("content", ""))
+
+
+def _parse_json(text: str) -> dict:
+    """모델 출력에서 JSON 객체를 꺼낸다.
+
+    format=json을 줘도 코드펜스를 두르거나 앞뒤에 말을 붙이는 경우가 있다.
+    파싱이 끝내 안 되면 빈 dict를 돌려준다. 한 조각 실패로 전체를 버리지 않는다.
+    """
+    text = (text or "").strip()
+    if not text:
+        return {}
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.S)
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        m = re.search(r"\{.*\}", text, re.S)
+        if not m:
+            return {}
+        try:
+            parsed = json.loads(m.group(0))
+        except json.JSONDecodeError:
+            return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+# ── 조각내기 ────────────────────────────────────────────────────────────────
+
+def chunk_transcript(text: str, max_chars: int = CHUNK_CHARS) -> list[str]:
+    """줄 경계를 지키며 자른다. 문장이 잘리면 모델이 앞뒤를 지어낸다."""
+    chunks, current, size = [], [], 0
+    for line in text.splitlines():
+        # 한 줄이 통째로 한도를 넘으면 그 줄만 따로 둔다. 억지로 쪼개지 않는다.
+        if size and size + len(line) + 1 > max_chars:
+            chunks.append("\n".join(current))
+            current, size = [], 0
+        current.append(line)
+        size += len(line) + 1
+    if current:
+        chunks.append("\n".join(current))
+    return [c for c in chunks if c.strip()]
+
+
+# ── 프롬프트 ────────────────────────────────────────────────────────────────
+
+_SYSTEM = (
+    "너는 한국어 회의록 정리 담당이다. 전사본은 음성인식 결과라 오탈자가 있다. "
+    "추측해서 내용을 지어내지 말고, 전사본에 실제로 있는 말만 쓴다. "
+    "반드시 JSON 객체 하나만 출력한다."
+)
+
+_MAP_PROMPT = """다음은 회의 전사본의 일부다. 이 부분에서만 뽑아라.
+
+{{
+  "topics": ["다룬 주제를 짧은 구로", ...],
+  "decisions": ["확정된 결정만. 논의 중인 것은 넣지 않는다", ...],
+  "action_items": [{{"owner": "담당자 또는 빈 문자열", "task": "할 일", "due": "기한 또는 빈 문자열"}}, ...]
+}}
+
+해당 항목이 없으면 빈 배열로 둔다.
+
+전사본:
+{chunk}"""
+
+_REDUCE_PROMPT = """아래는 한 회의를 여러 조각으로 나눠 정리한 결과다. 하나로 합쳐라.
+
+{{
+  "overview": "회의 전체를 3~5문장으로",
+  "decisions": ["중복을 제거한 결정사항", ...],
+  "action_items": [{{"owner": "", "task": "", "due": ""}}, ...]
+}}
+
+같은 내용이 여러 조각에 있으면 하나로 합친다. 없는 내용을 만들지 않는다.
+
+조각별 정리:
+{parts}"""
+
+
+# ── 본체 ────────────────────────────────────────────────────────────────────
+
+def _as_list(value) -> list:
+    return value if isinstance(value, list) else []
+
+
+def summarize(segments: list[dict], *, model: str = DEFAULT_MODEL,
+              host: str = DEFAULT_HOST, progress: bool = True,
+              chunk_chars: int = CHUNK_CHARS) -> Summary:
+    """전사 세그먼트 → 요약, 결정사항, 액션아이템."""
+    if not segments:
+        return Summary()
+
+    check_backend(host, model)
+    chunks = chunk_transcript(_segments_to_transcript(segments), chunk_chars)
+
+    parts = []
+    for i, chunk in enumerate(chunks, 1):
+        if progress:
+            print(f"요약 {i}/{len(chunks)} 조각...")
+        result = _chat(_MAP_PROMPT.format(chunk=chunk), _SYSTEM, model, host)
+        if result:
+            parts.append(result)
+
+    if not parts:
+        raise RuntimeError("요약 결과가 비어 있습니다 — 모델 응답을 해석하지 못했습니다.")
+
+    # 조각이 하나뿐이면 합칠 것이 없다. 호출 한 번을 아낀다.
+    if len(parts) == 1:
+        only = parts[0]
+        return Summary(
+            overview=" ".join(str(t) for t in _as_list(only.get("topics"))),
+            decisions=[str(d) for d in _as_list(only.get("decisions"))],
+            action_items=[a for a in _as_list(only.get("action_items")) if isinstance(a, dict)],
+        )
+
+    if progress:
+        print(f"조각 {len(parts)}개 병합...")
+    merged = _chat(
+        _REDUCE_PROMPT.format(parts=json.dumps(parts, ensure_ascii=False, indent=1)),
+        _SYSTEM, model, host,
+    )
+
+    # 병합이 실패해도 조각 결과는 살린다. 중복이 남더라도 빈 요약보다 낫다.
+    if not merged:
+        return Summary(
+            overview="",
+            decisions=[str(d) for p in parts for d in _as_list(p.get("decisions"))],
+            action_items=[a for p in parts for a in _as_list(p.get("action_items"))
+                          if isinstance(a, dict)],
+        )
+
+    return Summary(
+        overview=str(merged.get("overview", "")),
+        decisions=[str(d) for d in _as_list(merged.get("decisions"))],
+        action_items=[a for a in _as_list(merged.get("action_items")) if isinstance(a, dict)],
+    )

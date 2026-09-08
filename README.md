@@ -22,7 +22,10 @@
    render → 마크다운 회의록 (.md)
 ```
 
-전사·교정·렌더는 의존성만 있으면 완전 오프라인으로 동작한다. 화자 분리(diarize)와 요약(summarize)은 선택 단계다.
+전사, 교정, 렌더는 의존성만 있으면 완전 오프라인으로 동작한다. 화자 분리(diarize)와 요약(summarize)은 선택 단계다.
+
+요약도 로컬에서 돈다. 외부 API를 쓰면 "녹음이 기기 밖으로 나가지 않는다"는 전제가 무너지므로,
+품질이 아니라 그 이유로 로컬 모델을 쓴다.
 
 ## 설치
 
@@ -30,6 +33,13 @@
 python -m venv .venv && source .venv/Scripts/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 # ffmpeg 필요 (winget install ffmpeg 또는 apt install ffmpeg)
+```
+
+요약(`--summarize`)을 쓰려면 [Ollama](https://ollama.com)와 모델이 추가로 필요하다.
+
+```bash
+winget install Ollama.Ollama     # 또는 https://ollama.com/download
+ollama pull gemma3:4b            # 약 3.3GB
 ```
 
 Whisper 모델은 첫 실행 시 자동 다운로드된다(medium ≈ 1.5GB, large-v3 ≈ 3GB).
@@ -49,8 +59,9 @@ python cli.py "회의녹음.m4a" -o out/
 # 화자 분리 포함 (Phase 2, pyannote + HF 토큰 필요)
 python cli.py "회의녹음.m4a" --diarize
 
-# LLM 요약 포함 (Phase 3 — 현재 미구현, 실행 시 경고 후 생략)
+# 로컬 LLM 요약 포함 (Ollama 필요. 없으면 경고 후 생략)
 python cli.py "회의녹음.m4a" --summarize
+python cli.py "회의녹음.m4a" --summarize --llm-model qwen3:4b
 
 # 언어 지정 / 기존 출력 덮어쓰기 / 조용히
 python cli.py "meeting.m4a" --language en --force --quiet
@@ -67,7 +78,9 @@ python cli.py "회의녹음.m4a" --dry-run
 | `--language <code>` | 전사 언어 (기본 `ko`, 예: `en`/`ja`) |
 | `-o, --out-dir <dir>` | 출력 디렉토리 |
 | `--diarize` | 화자 분리 (pyannote 미설치 시 경고 후 생략) |
-| `--summarize` | LLM 요약 (Phase 3 미구현 — 경고 후 생략) |
+| `--summarize` | 로컬 LLM 요약 (Ollama 미가동 시 경고 후 생략) |
+| `--llm-model <name>` | 요약 모델 (기본 `gemma3:4b`) |
+| `--llm-host <url>` | Ollama 주소 (기본 `http://localhost:11434`) |
 | `--hf-token <token>` | 화자 분리용 HF 토큰 (또는 `HF_TOKEN` 환경변수) |
 | `--force` | 기존 `{파일명}.md` 덮어쓰기 (기본은 거부) |
 | `--dry-run` | 전사 없이 경로·설정만 출력 |
@@ -124,18 +137,19 @@ python cli.py --apply-terms answers.json
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest              # 47 tests
+python -m pytest              # 68 tests
 ```
 
-전사(faster-whisper)·화자 분리(pyannote)처럼 대용량 모델·외부 실행이 필요한 부분은
+전사(faster-whisper), 화자 분리(pyannote)처럼 대용량 모델이나 외부 실행이 필요한 부분은
 지연 import로 분리돼 있어, 테스트는 모델 없이 로직만 빠르게 돈다.
+요약도 HTTP 호출을 대체해 조각내기, 병합, 응답 파싱만 검증한다.
 
 ## 개발 상태
 
 - [x] Phase 0 — 모듈 리팩터·스캐폴딩
 - [ ] Phase 1 — 오프라인 파이프라인 end-to-end 검증 (순수 로직 pytest 커버 완료)
 - [ ] Phase 2 — 화자 분리(pyannote)
-- [ ] Phase 3 — LLM 요약, 액션아이템 (로컬 LLM 백엔드 검토 중)
+- [x] Phase 3 — 로컬 LLM 요약, 액션아이템 (Ollama + Gemma 3 4B)
 - [ ] Phase 4 — Streamlit UI
 
 ## 라이선스

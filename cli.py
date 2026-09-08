@@ -19,6 +19,8 @@ for _stream in (sys.stdout, sys.stderr):
 from meetscribe import __version__
 from meetscribe.config import DEFAULT_LANGUAGE, DEFAULT_MODEL, DEFAULT_OUTPUT_DIR
 from meetscribe.render import parse_meta, render_markdown
+from meetscribe.summarize import DEFAULT_HOST as LLM_HOST
+from meetscribe.summarize import DEFAULT_MODEL as LLM_MODEL
 from meetscribe.transcribe import transcribe
 
 # faster-whisper/ffmpeg가 디코드할 수 있는 대표 확장자.
@@ -112,7 +114,12 @@ def main():
     parser.add_argument("-o", "--out-dir", type=Path, default=DEFAULT_OUTPUT_DIR,
                         help="출력 디렉토리")
     parser.add_argument("--diarize", action="store_true", help="화자 분리 (Phase 2)")
-    parser.add_argument("--summarize", action="store_true", help="LLM 요약 (Phase 3)")
+    parser.add_argument("--summarize", action="store_true",
+                        help="로컬 LLM 요약 (Ollama 필요)")
+    parser.add_argument("--llm-model", default=LLM_MODEL,
+                        help=f"요약에 쓸 로컬 모델 (기본 {LLM_MODEL})")
+    parser.add_argument("--llm-host", default=LLM_HOST,
+                        help=f"Ollama 주소 (기본 {LLM_HOST})")
     parser.add_argument("--hf-token", default=None,
                         help="화자 분리용 HuggingFace 토큰 (미지정 시 HF_TOKEN 환경변수)")
     parser.add_argument("--force", action="store_true", help="기존 출력 파일 덮어쓰기")
@@ -158,9 +165,13 @@ def main():
                 "(requirements.txt 주석 해제 후 설치).")
         do_diarize = False
     if do_summarize:
-        # 요약은 Phase 3 미구현 — 전사 후 크래시하지 않도록 미리 알리고 생략한다.
-        _eprint("경고: 요약(--summarize)은 Phase 3에서 구현 예정 — 이번 실행에서는 생략합니다.")
-        do_summarize = False
+        # 전사는 수십 분이 걸린다. 모델이 없어서 실패할 것을 그 전에 확인한다.
+        from meetscribe.summarize import check_backend
+        try:
+            check_backend(args.llm_host, args.llm_model)
+        except RuntimeError as e:
+            _eprint(f"경고: 요약을 건너뜁니다 - {e}")
+            do_summarize = False
 
     if args.dry_run:
         print(f"[dry-run] 입력 : {audio_path}")
@@ -196,8 +207,9 @@ def main():
     if do_summarize:
         from meetscribe.summarize import summarize
         try:
-            summary = summarize(segments)
-        except (RuntimeError, NotImplementedError) as e:
+            summary = summarize(segments, model=args.llm_model,
+                                host=args.llm_host, progress=progress)
+        except RuntimeError as e:
             _eprint(f"경고: 요약 생략 ({e})")
 
     # ── 렌더 + 저장 ────────────────────────────────────────────────────────
