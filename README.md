@@ -193,6 +193,21 @@ python cli.py --apply-terms answers.json
 
 호칭은 교정하지 않고 후보에서 빼기만 한다. "팀장님"을 이름으로 바꾸면 한 말이 달라진다.
 
+### 실명 유출 방지 훅
+
+이 프로젝트는 사람 이름을 다루는 기능이라, 테스트 픽스처와 docstring 예시에 실제 이름을
+쓰기 쉽다. 그리고 그 자리는 `.gitignore`가 못 막는다. gitignore는 파일을 막지 코드 안에
+타이핑한 문자열을 막지 않는다. 실제로 2026-09-08에 그렇게 실명이 public으로 나갔다.
+
+커밋 직전에 스테이징된 내용을 `people.local.json`의 명단과 대조하는 훅을 둔다.
+
+```bash
+git config core.hooksPath .githooks
+```
+
+명단 파일은 gitignore 대상이라 저장소에 올라가지 않고, 훅은 읽기만 한다. 예시가 필요하면
+가명을 쓴다: 홍길동 / 김영희 / 이철수. 정말 필요할 때만 `git commit --no-verify`.
+
 후보는 모델 없이 세 신호로 찾는다.
 
 | 신호 | 잡아내는 것 | 예 |
