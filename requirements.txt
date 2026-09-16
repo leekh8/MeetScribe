@@ -1,13 +1,19 @@
-# 핵심 (Phase 1) — 오프라인 전사
+# 핵심: 오프라인 전사
 faster-whisper>=1.2.0
 
-# 화자 분리 (Phase 2) — 필요할 때 주석 해제. HuggingFace 토큰 + 모델 동의 필요.
+# 화자 분리 (기본 백엔드). 모델 74MB, 토큰 불필요.
+# 모델 파일은 별도로 받는다. README "화자 분리 준비" 참고.
+sherpa-onnx>=1.13
+numpy>=1.24
+
+# 화자 분리 대체 백엔드 (--diarize-backend pyannote). torch 약 2.5GB를 끌고 오고
+# HuggingFace 토큰 + 모델 사용 동의가 필요하다. 필요할 때만 주석 해제.
 # pyannote.audio>=3.1
 
-# LLM 요약 (Phase 3) — 필요할 때 주석 해제.
-# anthropic>=0.40
+# LLM 요약은 로컬 Ollama를 표준 라이브러리로 직접 호출한다. 파이썬 의존성 없음.
+#   ollama pull gemma3:4b
 
-# UI (Phase 4)
+# UI (미착수)
 # streamlit>=1.30
 
 # ffmpeg는 별도 설치 (winget install ffmpeg / apt install ffmpeg)

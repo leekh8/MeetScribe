@@ -246,6 +246,16 @@ def _grounded(value: str, source: str) -> str:
     return value if value in source else ""
 
 
+def _grounding_source(transcript: str, attendees: list[str]) -> str:
+    """담당자, 기한 대조에 쓸 원문. 전사본에 참석자 명단을 덧붙인다.
+
+    참석자는 사람이 회의 시작 전에 아는 값이라 지어낸 것이 아니다. 전사본에만 대조하면
+    화자 분리를 안 켠 회의에서 담당자가 100% 빈 칸이 된다.
+    """
+    names = [n.strip() for n in attendees if n and n.strip()]
+    return transcript + ("\n" + "\n".join(names) if names else "")
+
+
 def _clean_actions(items, source: str = "") -> list[dict]:
     """액션아이템을 owner/task/due 세 칸으로 정규화한다.
 
@@ -272,23 +282,32 @@ def _clean_decisions(items) -> list[str]:
 
 def summarize(segments: list[dict], *, model: str = DEFAULT_MODEL,
               host: str = DEFAULT_HOST, progress: bool = True,
-              chunk_chars: int = CHUNK_CHARS) -> Summary:
+              chunk_chars: int = CHUNK_CHARS,
+              attendees: list[str] | None = None) -> Summary:
     """전사 세그먼트 → 요약, 결정사항, 액션아이템.
+
+    attendees를 주면 담당자 대조 기준에 참석자 이름을 더한다. 화자 분리를 안 켜면
+    전사 세그먼트에 이름이 한 번도 안 나와서 담당자 칸이 구조적으로 전부 비는데,
+    참석자는 시작할 때 사람이 아는 값이므로 받아 두면 그 칸이 살아난다.
 
     끝나면 모델을 RAM에서 내린다. 실패로 끝나도 마찬가지다.
     """
     if not segments:
         return Summary()
     try:
-        return _run_summary(segments, model, host, progress, chunk_chars)
+        return _run_summary(segments, model, host, progress, chunk_chars,
+                            attendees or [])
     finally:
         release_model(host, model)
 
 
 def _run_summary(segments: list[dict], model: str, host: str,
-                 progress: bool, chunk_chars: int) -> Summary:
+                 progress: bool, chunk_chars: int,
+                 attendees: list[str] | None = None) -> Summary:
     check_backend(host, model)
     transcript = _segments_to_transcript(segments, MERGE_CHARS)
+    # 대조 기준 = 전사본 + 참석자 명단. 요약에 넣는 원문(chunks)은 전사본만 쓴다.
+    grounding = _grounding_source(transcript, attendees or [])
     chunks = chunk_transcript(transcript, chunk_chars)
 
     parts = []
@@ -309,7 +328,7 @@ def _run_summary(segments: list[dict], model: str, host: str,
             overview=", ".join(dict.fromkeys(
                 t for t in (_clean(x) for x in _as_list(only.get("topics"))) if t)),
             decisions=_clean_decisions(only.get("decisions")),
-            action_items=_clean_actions(only.get("action_items"), transcript),
+            action_items=_clean_actions(only.get("action_items"), grounding),
         )
 
     if progress:
@@ -325,7 +344,7 @@ def _run_summary(segments: list[dict], model: str, host: str,
             overview="",
             decisions=[d for p in parts for d in _clean_decisions(p.get("decisions"))],
             action_items=[a for p in parts
-                          for a in _clean_actions(p.get("action_items"), transcript)],
+                          for a in _clean_actions(p.get("action_items"), grounding)],
         )
 
     overview = str(merged.get("overview", "")).strip()
@@ -337,5 +356,5 @@ def _run_summary(segments: list[dict], model: str, host: str,
     return Summary(
         overview=overview,
         decisions=_clean_decisions(merged.get("decisions")),
-        action_items=_clean_actions(merged.get("action_items"), transcript),
+        action_items=_clean_actions(merged.get("action_items"), grounding),
     )

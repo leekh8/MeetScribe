@@ -7,6 +7,7 @@
 
 import argparse
 import importlib.util
+import json
 import os
 import sys
 from pathlib import Path
@@ -18,13 +19,38 @@ for _stream in (sys.stdout, sys.stderr):
 
 from meetscribe import __version__
 from meetscribe.config import DEFAULT_LANGUAGE, DEFAULT_MODEL, DEFAULT_OUTPUT_DIR
-from meetscribe.render import parse_meta, render_markdown
+from meetscribe.render import (
+    DEFAULT_SESSION,
+    SESSION_TAGS,
+    parse_meta,
+    render_markdown,
+    session_tag,
+)
 from meetscribe.summarize import DEFAULT_HOST as LLM_HOST
 from meetscribe.summarize import DEFAULT_MODEL as LLM_MODEL
 from meetscribe.transcribe import transcribe
 
 # faster-whisper/ffmpeg가 디코드할 수 있는 대표 확장자.
 SUPPORTED_EXTS = {".m4a", ".wav", ".mp3", ".flac", ".ogg", ".aac", ".mp4", ".webm", ".opus"}
+
+
+def _dump_segments(segments: list, path: Path) -> None:
+    """전사 결과를 그대로 떨궈 둔다. 전사는 가장 비싼 단계라 한 번 하면 다시 안 하게."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(segments, ensure_ascii=False, indent=1), encoding="utf-8")
+    except OSError as e:
+        _eprint(f"경고: 전사본 저장 실패 ({e})")
+
+
+def _load_segments(path: Path) -> list:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        _fail(f"전사본을 읽을 수 없음: {path} ({e})")
+    if not isinstance(data, list) or not data:
+        _fail(f"전사본이 비었거나 형식이 다릅니다: {path}")
+    return data
 
 
 def _module_available(name: str) -> bool:
@@ -123,6 +149,22 @@ def main():
     parser.add_argument("-o", "--out-dir", type=Path, default=DEFAULT_OUTPUT_DIR,
                         help="출력 디렉토리")
     parser.add_argument("--diarize", action="store_true", help="화자 분리 (Phase 2)")
+    parser.add_argument("--diarize-backend", choices=["onnx", "pyannote"], default="onnx",
+                        help="화자 분리 백엔드 (기본 onnx: 모델 74MB, 토큰 불필요). "
+                             "pyannote는 torch 2.5GB와 HuggingFace 토큰이 필요하다")
+    parser.add_argument("--attendees", default=None, metavar="이름,이름",
+                        help="참석자 (쉼표 구분). 담당자 대조 기준에 더해져 액션아이템의 "
+                             "담당 칸이 채워진다")
+    parser.add_argument("--speakers", type=int, default=None, metavar="N",
+                        help="참석자 수. 미지정 시 --attendees 개수를 쓴다. "
+                             "자동 추정은 신뢰할 수 없으므로 아는 값이면 지정할 것")
+    parser.add_argument("--type", dest="session_type", default=DEFAULT_SESSION,
+                        metavar="종류",
+                        help="세션 종류: " + " / ".join(SESSION_TAGS)
+                             + " 또는 임의 문자열(그대로 태그가 된다)")
+    parser.add_argument("--from-transcript", type=Path, default=None, metavar="JSON",
+                        help="저장해 둔 전사본 json으로 시작. 전사를 건너뛰므로 "
+                             "요약이나 양식만 다시 돌릴 때 쓴다")
     parser.add_argument("--summarize", action="store_true",
                         help="로컬 LLM 요약 (Ollama 필요)")
     parser.add_argument("--llm-model", default=LLM_MODEL,
@@ -162,17 +204,41 @@ def main():
               f"{', '.join(sorted(SUPPORTED_EXTS))}")
 
     out_path = args.out_dir / f"{audio_path.stem}.md"
-    if out_path.exists() and not args.force and not args.dry_run:
+    segments_path = args.out_dir / f"{audio_path.stem}.segments.json"
+    # --from-transcript는 이미 만든 회의록을 다시 만드는 것이 목적이라 --force를 요구하지 않는다.
+    # 양식이나 요약만 바꿔 돌려보는 경로에 매번 --force를 붙이게 하면 재시도가 비싸진다.
+    if out_path.exists() and not args.force and not args.dry_run and not args.from_transcript:
         _fail(f"출력 파일이 이미 있음: {out_path} (덮어쓰려면 --force)")
+    if args.from_transcript and not args.from_transcript.exists():
+        _fail(f"전사본 없음: {args.from_transcript}")
+
+    # 참석자는 회의 시작 전에 사람이 아는 값이다. 자동 추정에 맡기지 않고 받는다.
+    attendees = [n.strip() for n in (args.attendees or "").split(",") if n.strip()]
+    num_speakers = args.speakers or (len(attendees) or None)
 
     # ── 선택 기능 사전 점검 (비싼 전사 전에 실패/경고) ──────────────────────
     # 전사는 수 분~수십 분 걸리므로, 쓸 수 없는 옵션은 여기서 걸러 낭비를 막는다.
     do_diarize = args.diarize
     do_summarize = args.summarize
-    if do_diarize and not _module_available("pyannote.audio"):
-        _eprint("경고: pyannote.audio 미설치 — 화자 분리를 건너뜁니다 "
+    if do_diarize and args.diarize_backend == "onnx":
+        from meetscribe.diarize import EMB_MODEL, SEG_MODEL
+        if not _module_available("sherpa_onnx"):
+            _eprint("경고: sherpa-onnx 미설치로 화자 분리를 건너뜁니다 "
+                    "(pip install sherpa-onnx numpy).")
+            do_diarize = False
+        elif not (SEG_MODEL.exists() and EMB_MODEL.exists()):
+            _eprint(f"경고: 화자 분리 모델이 없어 건너뜁니다 ({SEG_MODEL.parent.parent}). "
+                    "README의 모델 내려받기 절차를 보세요.")
+            do_diarize = False
+    elif do_diarize and not _module_available("pyannote.audio"):
+        _eprint("경고: pyannote.audio 미설치로 화자 분리를 건너뜁니다 "
                 "(requirements.txt 주석 해제 후 설치).")
         do_diarize = False
+    if do_diarize and not num_speakers:
+        # 자동 추정은 정답 3명짜리 녹음에서 28명까지밖에 못 좁혔다. 결과를 못 믿는다는 것을
+        # 미리 말한다. 조용히 이상한 결과를 내는 것보다 낫다.
+        _eprint("경고: 참석자 수를 모르면 화자 수 추정이 크게 빗나갑니다. "
+                "--speakers N 또는 --attendees 로 알려주세요.")
     if do_summarize:
         # 전사는 수십 분이 걸린다. 모델이 없어서 실패할 것을 그 전에 확인한다.
         from meetscribe.summarize import check_backend
@@ -187,49 +253,83 @@ def main():
         print(f"[dry-run] 출력 : {out_path}")
         print(f"[dry-run] 모델 : {args.model} / 언어: {args.language}"
               f" / 화자분리: {do_diarize} / 요약: {do_summarize}")
+        print(f"[dry-run] 종류 : {args.session_type} (태그 {session_tag(args.session_type)})"
+              f" / 참석 {len(attendees)}명"
+              + (f" ({', '.join(attendees)})" if attendees else "")
+              + (f" / 화자 수 {num_speakers}" if num_speakers else ""))
+        if args.from_transcript:
+            print(f"[dry-run] 전사 : 건너뜀, {args.from_transcript} 재사용")
         return
 
     progress = not args.quiet
+    meta = parse_meta(audio_path)
 
-    # ── 전사 ───────────────────────────────────────────────────────────────
-    try:
-        segments = transcribe(audio_path, model_size=args.model,
-                              language=args.language, progress=progress)
-    except (RuntimeError, OSError) as e:
-        _fail(f"전사 실패: {e}")
-    if not segments:
-        _fail("전사 결과가 비어 있습니다 — 오디오에 음성이 없거나 형식이 잘못됐을 수 있습니다.")
+    # 단계마다 같은 경로에 다시 쓴다.
+    #
+    # 전사는 수십 분, 요약은 30~40분, 화자 분리는 그 이상 걸린다. 맨 끝에서 한 번만 쓰면
+    # 그 사이 어디서 죽든(Ctrl-C 포함) 앞 단계 결과가 통째로 사라진다. 완성본이 아니어도
+    # 그 시점까지 확보한 것은 디스크에 있어야 한다.
+    def save(segs, summary=None) -> None:
+        md = render_markdown(segs, meta, summary=summary,
+                             attendees=attendees, session_type=args.session_type)
+        try:
+            args.out_dir.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(md, encoding="utf-8")
+        except OSError as e:
+            _fail(f"저장 실패: {out_path} ({e})")
+
+    # ── 전사 (또는 저장된 전사본 재사용) ───────────────────────────────────
+    if args.from_transcript:
+        segments = _load_segments(args.from_transcript)
+        if progress:
+            print(f"전사본 재사용: {args.from_transcript} ({len(segments)}개 구간)")
+    else:
+        try:
+            segments = transcribe(audio_path, model_size=args.model,
+                                  language=args.language, progress=progress)
+        except (RuntimeError, OSError) as e:
+            _fail(f"전사 실패: {e}")
+        if not segments:
+            _fail("전사 결과가 비어 있습니다. 오디오에 음성이 없거나 형식이 잘못됐을 수 있습니다.")
+        _dump_segments(segments, segments_path)
+        if progress:
+            print(f"전사본 저장: {segments_path} (--from-transcript 로 재사용 가능)")
+
+    save(segments)
+    if progress:
+        print(f"1차 저장: {out_path} (전사까지)")
 
     # ── 화자 분리 (선택) ───────────────────────────────────────────────────
     if do_diarize:
-        from meetscribe.diarize import assign_speakers, diarize
+        from meetscribe.diarize import assign_speakers, diarize, diarize_onnx
         if progress:
-            print("화자 분리 중...")
+            print(f"화자 분리 중... ({args.diarize_backend}"
+                  + (f", {num_speakers}명 고정)" if num_speakers else ", 화자 수 추정)"))
         try:
-            turns = diarize(audio_path, hf_token=hf_token)
+            if args.diarize_backend == "onnx":
+                turns = diarize_onnx(audio_path, num_speakers=num_speakers)
+            else:
+                turns = diarize(audio_path, hf_token=hf_token, num_speakers=num_speakers)
             segments = assign_speakers(segments, turns)
+            save(segments)
+            if progress:
+                found = len({t["speaker"] for t in turns})
+                print(f"화자 {found}명 / 구간 {len(turns)}개 -> {out_path}")
         except (RuntimeError, OSError) as e:
-            _eprint(f"경고: 화자 분리 실패 — 화자 없이 진행합니다 ({e})")
+            _eprint(f"경고: 화자 분리 실패로 화자 없이 진행합니다 ({e})")
 
-    # ── 요약 (선택, 현재 비활성) ───────────────────────────────────────────
+    # ── 요약 (선택) ────────────────────────────────────────────────────────
     summary = None
     if do_summarize:
         from meetscribe.summarize import summarize
         try:
             summary = summarize(segments, model=args.llm_model,
-                                host=args.llm_host, progress=progress)
+                                host=args.llm_host, progress=progress,
+                                attendees=attendees)
         except RuntimeError as e:
             _eprint(f"경고: 요약 생략 ({e})")
 
-    # ── 렌더 + 저장 ────────────────────────────────────────────────────────
-    meta = parse_meta(audio_path)
-    md = render_markdown(segments, meta, summary=summary)
-
-    try:
-        args.out_dir.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(md, encoding="utf-8")
-    except OSError as e:
-        _fail(f"저장 실패: {out_path} ({e})")
+    save(segments, summary=summary)
     print(f"저장: {out_path}")
 
 

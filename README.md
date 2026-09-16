@@ -14,7 +14,7 @@
       │  corrections (도메인 용어 후처리 교정)
       ▼
    교정된 세그먼트
-      │  diarize     (pyannote, 선택) ─ 화자 태깅
+      │  diarize     (sherpa-onnx, 선택) ─ 화자 태깅
       ▼
    화자별 세그먼트
       │  summarize   (LLM, 선택) ─ 요약·결정·액션아이템
@@ -39,6 +39,32 @@ python -m venv .venv && source .venv/Scripts/activate   # Windows: .venv\Scripts
 pip install -r requirements.txt
 # ffmpeg 필요 (winget install ffmpeg 또는 apt install ffmpeg)
 ```
+
+### 화자 분리 준비
+
+`--diarize`를 쓰려면 모델 두 개를 받아 `models/`에 둔다. 합쳐 약 74MB이고 토큰이나 사용
+동의가 필요 없다. 용량 때문에 레포에는 넣지 않는다.
+
+```bash
+mkdir -p models && cd models
+
+# 분할 모델 (누가 언제 말했나)
+curl -LO https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2
+tar xf sherpa-onnx-pyannote-segmentation-3-0.tar.bz2
+
+# 임베딩 모델 (같은 사람인가)
+curl -L -o eres2net.onnx https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx
+```
+
+> 임베딩은 ERes2Net을 쓴다. CAM++로 재 봤을 때 발화량이 적은 화자가 통째로 흡수돼
+> (전체의 15%를 차지한 화자가 1.5%로 뭉개졌다) ERes2Net으로 바꿔 29%까지 복구했다.
+> `min_duration_on`을 조정해도 효과가 없었으므로 임베딩 모델 선택이 갈림길이다.
+>
+> ⚠️ 릴리스 태그 철자가 `speaker-recongition-models`다. 오타지만 실제 경로라 그대로 써야 한다.
+
+**참석자 수를 알려주는 것이 정확도에 가장 크게 기여한다.** 자동 추정은 폰으로 원거리
+녹음한 회의에서 무너진다(정답 3명짜리 녹음에 임계값 0.5로 64명, 0.8로도 28명이 나왔다).
+`--attendees` 또는 `--speakers`로 알려주면 군집 수를 그 값으로 고정한다.
 
 요약(`--summarize`)을 쓰려면 [Ollama](https://ollama.com)와 모델이 추가로 필요하다.
 
@@ -70,8 +96,18 @@ python cli.py "회의녹음.m4a" --model large-v3
 # 출력 위치
 python cli.py "회의녹음.m4a" -o out/
 
-# 화자 분리 포함 (Phase 2, pyannote + HF 토큰 필요)
-python cli.py "회의녹음.m4a" --diarize
+# 참석자를 알려주고 시작한다 (권장)
+#   담당자 대조 기준에 이름이 들어가고, 화자 수가 고정돼 분리 정확도가 올라간다
+python cli.py "회의녹음.m4a" --attendees "홍길동,김영희,이철수" --diarize --summarize
+
+# 세션 종류를 나눈다 (태그가 달라진다)
+python cli.py "교육녹음.m4a" --type training
+
+# 화자 분리만 (참석자 수를 아는 경우)
+python cli.py "회의녹음.m4a" --diarize --speakers 3
+
+# 전사를 다시 하지 않고 요약이나 양식만 다시 뽑기
+python cli.py "회의녹음.m4a" --from-transcript out/회의녹음.segments.json --summarize
 
 # 로컬 LLM 요약 포함 (Ollama 필요. 없으면 경고 후 생략)
 python cli.py "회의녹음.m4a" --summarize
@@ -91,11 +127,16 @@ python cli.py "회의녹음.m4a" --dry-run
 | `--model {tiny,base,small,medium,large-v3}` | Whisper 모델 (기본 `medium`) |
 | `--language <code>` | 전사 언어 (기본 `ko`, 예: `en`/`ja`) |
 | `-o, --out-dir <dir>` | 출력 디렉토리 |
-| `--diarize` | 화자 분리 (pyannote 미설치 시 경고 후 생략) |
+| `--diarize` | 화자 분리 (모델이나 패키지가 없으면 경고 후 생략) |
+| `--diarize-backend {onnx,pyannote}` | 분리 백엔드 (기본 `onnx`) |
+| `--attendees "이름,이름"` | 참석자. 담당자 대조 기준에 더해지고 화자 수 기본값이 된다 |
+| `--speakers N` | 참석자 수. 미지정 시 `--attendees` 개수 |
+| `--type <종류>` | `meeting` / `training` / `interview` / `review` 또는 임의 문자열 |
+| `--from-transcript <json>` | 저장된 전사본으로 시작 (전사 건너뜀) |
 | `--summarize` | 로컬 LLM 요약 (Ollama 미가동 시 경고 후 생략) |
 | `--llm-model <name>` | 요약 모델 (기본 `gemma3:4b`) |
 | `--llm-host <url>` | Ollama 주소 (기본 `http://localhost:11434`) |
-| `--hf-token <token>` | 화자 분리용 HF 토큰 (또는 `HF_TOKEN` 환경변수) |
+| `--hf-token <token>` | pyannote 백엔드용 HF 토큰 (또는 `HF_TOKEN` 환경변수) |
 | `--force` | 기존 `{파일명}.md` 덮어쓰기 (기본은 거부) |
 | `--dry-run` | 전사 없이 경로·설정만 출력 |
 | `--quiet` | 진행 로그 숨김 |
@@ -172,10 +213,10 @@ python cli.py --apply-terms answers.json
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest              # 89 tests
+python -m pytest              # 114 tests
 ```
 
-전사(faster-whisper), 화자 분리(pyannote)처럼 대용량 모델이나 외부 실행이 필요한 부분은
+전사(faster-whisper), 화자 분리(sherpa-onnx)처럼 대용량 모델이나 외부 실행이 필요한 부분은
 지연 import로 분리돼 있어, 테스트는 모델 없이 로직만 빠르게 돈다.
 요약도 HTTP 호출을 대체해 조각내기, 병합, 응답 파싱만 검증한다.
 
@@ -183,7 +224,7 @@ python -m pytest              # 89 tests
 
 - [x] Phase 0 — 모듈 리팩터·스캐폴딩
 - [ ] Phase 1 — 오프라인 파이프라인 end-to-end 검증 (순수 로직 pytest 커버 완료)
-- [ ] Phase 2 — 화자 분리(pyannote)
+- [x] Phase 2 — 화자 분리(sherpa-onnx + ERes2Net, 참석자 수 지정)
 - [x] Phase 3 — 로컬 LLM 요약, 액션아이템 (Ollama + Gemma 3 4B)
 - [ ] Phase 4 — Streamlit UI
 
